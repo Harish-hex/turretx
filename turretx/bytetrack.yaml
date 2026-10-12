@@ -1,0 +1,9 @@
+# Ultralytics ByteTrack settings for TurretX (track_buffer raised 30 → 60 so tracks
+# survive short detection dropouts, e.g. motion blur).
+tracker_type: bytetrack
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 60
+match_thresh: 0.8
+fuse_score: True

@@ -130,13 +130,14 @@ tests/           # matcher unit + metamorphic tests on synthetic tracks
 
 ### 5.1 Tracker
 - **Detector backends** (set in config; compare all three by the **hour 2 checkpoint**):
-  - `yolo`: official `yolov8n.pt` (or `models/vehicle.pt` once fine-tuned). Low confidence threshold (**0.15–0.25**). Accept any class **except `person`** (R7), and only boxes inside the table area. `imgsz` 640–960.
+  - `yolo`: official `yolov8n.pt` **or `yolo26n.pt`** (newer, NMS-free, better on small objects; compare both) or `models/vehicle.pt` once fine-tuned. Low confidence threshold (**0.15–0.25**). Accept any class **except `person`** (R7), and only boxes inside the table area. `imgsz` 640–960.
   - `yoloworld`: `yolov8s-world.pt` with `set_classes(["toy car"])`.
   - `diff`: **difference from a reference frame of the empty table** (hotkey `b` captures it). absdiff → threshold → morphology → contours. Reject blobs **touching the table border** or outside `[min_area, max_area]` (hands, sticks, R7). Very reliable in a controlled scene, including stopped cars. **This is the guaranteed fallback.** It needs locked phone exposure and diffuse light (shadows inflate blobs). Known limitation: cars touching each other merge into one blob (R16), so run the crossing scenario on a YOLO backend.
 - **Tracking:** ByteTrack via `model.track(persist=True, tracker=...)` with `track_buffer` raised to about 60. For the `diff` backend, use a small centroid+IoU tracker with Hungarian assignment (scipy).
 - **Ground point:** use the **bottom-centre of the box**, not its centre. The homography maps the *ground plane*. At an angle this is still biased by a few cm depending on heading (R11), so mount the camera at ≥60° and tune σp on real data.
-- **Kinematics:** keep about 1 s of (t, x_cm, y_cm) per track; velocity = least-squares slope; speed and heading derived from it. Below 2 cm/s, treat the vehicle as stationary.
+- **Kinematics:** keep **0.5 s** of (t, x_cm, y_cm) per track (`tracker.velocity_window_s`); velocity = least-squares slope; speed and heading derived from it. Below 2 cm/s, treat the vehicle as stationary. *(Phase 2 finding: a 1 s window reports the velocity from ~0.5 s ago and was ~4 cm/s off on curves; 0.5 s halves that while staying robust to jitter.)*
 - **Re-acquisition:** a lost-then-found vehicle gets a new track ID and its confidence history restarts, so it needs about 1 s to regain FRIENDLY. This is intended, honest behaviour (R17).
+- **Hour-2 checkpoint tool:** `python scripts/eval_tracker.py --backend <b> [--weights w] --source <clip>`. On the synthetic clip add `--truth` to score recall, position/velocity error and ID switches. On real clips it reports vehicles per frame and distinct IDs (fewer = steadier). Phase 2 synthetic baseline for `diff`: 100% recall, 0.5 cm mean position error, ~95 FPS on the M1; all ID switches came from cars within ~10 cm merging (R16).
 - **Motion blur** is the main cause of unreliable detection while moving: lock exposure, light the table well, use 60 FPS if available.
 
 ### 5.2 Homography (R12)

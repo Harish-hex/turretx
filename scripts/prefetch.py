@@ -19,6 +19,12 @@ def yolo():
     YOLO("yolov8n.pt")(blank, verbose=False)
 
 
+def yolo26():
+    from ultralytics import YOLO
+
+    YOLO("yolo26n.pt")(blank, verbose=False)
+
+
 def bytetrack():
     from ultralytics import YOLO
 
@@ -34,5 +40,6 @@ def yolo_world():
 
 
 step("YOLOv8n weights", yolo)
+step("YOLO26n weights", yolo26)
 step("ByteTrack tracker", bytetrack)
 step("YOLO-World weights + CLIP", yolo_world)

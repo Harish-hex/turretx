@@ -17,8 +17,10 @@ detector:
   imgsz: 640
   exclude_classes: [person]
   classes_text: ["toy car"] # yoloworld only
-  diff: {min_area: 400, max_area: 20000}
-tracker: {track_buffer: 60}
+  diff: {min_area: 400, max_area: 20000, thresh: 30, background: null}  # background: empty-table image path
+  ground_point_frac: 1.0    # where on the box the car touches the ground: 1.0 = bottom edge, 0.5 = centre (R11)
+  world_weights: yolov8s-world.pt
+tracker: {track_buffer: 60, velocity_window_s: 0.5}   # shorter = less lag on curves, more jitter
 
 tags:                       # simulator-only GPS stand-in (R1); tune HSV at the venue
   F-1: {hsv_lo: [140, 120, 120], hsv_hi: [170, 255, 255]}

@@ -25,7 +25,7 @@ Workflow: write code on the Mac and `git push`, then `git pull` on the 3050 and 
 | `pyyaml` | `config.yaml` | |
 | CLIP (auto) | YOLO-World text encoder | Auto-installed by `scripts/prefetch.py` on first use; **needs `git`** |
 
-Model weights (auto-downloaded by `prefetch.py`, gitignored): `yolov8n.pt` (~6 MB), `yolov8s-world.pt` (~25 MB).
+Model weights (auto-downloaded by `prefetch.py`, gitignored): `yolov8n.pt` (~6 MB), `yolo26n.pt` (~6 MB), `yolov8s-world.pt` (~25 MB), plus the CLIP text encoder in `weights/` (~340 MB). If you already ran setup, run `python scripts/prefetch.py` again to fetch `yolo26n.pt`.
 Fine-tuned weights go in `models/` and **are** committed.
 
 > ⚠️ Only load weights from official Ultralytics downloads or ones we trained ourselves. `.pt` files are pickles and can run code when loaded, so don't use unknown third-party models.

@@ -57,7 +57,7 @@ def _draw_car(img, x, y, heading, colour, sticker):
         cv2.rectangle(img, (int(cx) - r, int(cy) - r), (int(cx) + r, int(cy) + r), (180, 40, 230), -1)
 
 
-def render(t):
+def render(t, cars=True):
     img = np.full((CANVAS[1], CANVAS[0], 3), 205, np.uint8)  # light grey table
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     m = MARKER_CM * PX_PER_CM
@@ -68,11 +68,17 @@ def render(t):
         x0, y0 = int(cx - m / 2), int(cy - m / 2)
         cv2.rectangle(img, (x0 - 15, y0 - 15), (x0 + m + 15, y0 + m + 15), (255, 255, 255), -1)
         img[y0:y0 + m, x0:x0 + m] = cv2.cvtColor(tag, cv2.COLOR_GRAY2BGR)
-    for name, (x, y, h) in car_states(t).items():
+    for name, (x, y, h) in (car_states(t).items() if cars else []):
         colour, sticker = CARS[name]
         _draw_car(img, x, y, h, colour, sticker)
     out = cv2.warpPerspective(img, WARP, OUT_SIZE, borderValue=(60, 60, 60))
     return cv2.GaussianBlur(out, (3, 3), 0)
+
+
+def car_velocity(name, t, dt=1e-3):
+    """Ground-truth (vx, vy) in cm/s by central difference."""
+    (x0, y0, _), (x1, y1, _) = car_states(t - dt)[name], car_states(t + dt)[name]
+    return (x1 - x0) / (2 * dt), (y1 - y0) / (2 * dt)
 
 
 def write_clip(path, seconds=10):
