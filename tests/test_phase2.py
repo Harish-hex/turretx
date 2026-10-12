@@ -122,16 +122,17 @@ def test_tag_locator_reports_invisible_when_sticker_hidden(homo):
     assert loc.update(synthetic.render(0, cars=False), 0.0) == [{"rf_id": "F-1", "t": 0.0, "visible": False}]
 
 
-@pytest.mark.parametrize("module", ["tracker.py", "matcher.py"])
+@pytest.mark.parametrize("module", ["tracker.py", "matcher.py", "rfrx.py"])
 def test_firewall_identity_pipeline_never_imports_taglocator(module):
-    """R1: the sticker is the simulator's GPS stand-in only; identification must not see it."""
+    """R1: the sticker is the simulator's GPS stand-in only; identification must not see it.
+    The drone-side receiver must not reach into the simulator either: it only sees packets."""
     path = Path(__file__).resolve().parent.parent / "turretx" / module
     if not path.exists():
         pytest.skip(f"{module} not written yet")
     tree = ast.parse(path.read_text())
     imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     imported |= {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-    assert not any("taglocator" in m for m in imported)
+    assert not any("taglocator" in m or "rfsim" in m for m in imported)
 
 
 def test_yolo_backend_excludes_people():

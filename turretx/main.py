@@ -1,10 +1,11 @@
 """TurretX main loop.
 
-Phase 2: camera → homography → vehicle tracking (+ simulator-only tag locator).
+Phase 2: camera → homography → vehicle tracking; sticker GPS → RF sim → signed claims.
 Run:  python -m turretx.main [--source 1 | recordings/clip.mp4] [--backend yolo|yoloworld|diff]
                              [--weights yolo26n.pt] [--debug-tags] [--headless --max-frames N]
 Keys: h calibrate (ArUco; falls back to clicking TL, TR, BR, BL: right-click undo, Esc cancel)
       · b capture empty-table background (diff backend) · p pause · q quit
+      Red team: f forged · r replay · d cloned ID (toggle) · g ghost ID (toggle) · j jam (toggle)
 """
 import argparse
 import time
@@ -15,6 +16,9 @@ import numpy as np
 from turretx.camera import Camera
 from turretx.config import load_config, parse_source
 from turretx.homography import Homography
+from turretx.rfrx import Interrogator, Receiver
+from turretx.rfsim import RFSim
+from turretx import wire
 from turretx.taglocator import TagLocator
 from turretx.tracker import DiffBackend, Tracker
 
@@ -43,6 +47,15 @@ def draw_tracks(vis, tracks):
         label = f"#{tr['track_id']} {tr['speed']:.0f}cm/s"
         cv2.putText(vis, label, (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4)
         cv2.putText(vis, label, (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+
+
+def draw_claims(vis, homo, claims):
+    """RF claims as rings at the claimed position: cyan, magenta if the ID is in conflict."""
+    for c in claims:
+        px, py = homo.to_px([(c["x"], c["y"])])[0].astype(int)
+        colour = (255, 0, 255) if c["conflict"] else (255, 255, 0)
+        cv2.circle(vis, (int(px), int(py)), 16, colour, 2)
+        cv2.putText(vis, c["rf_id"], (int(px) + 18, int(py) + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.55, colour, 2)
 
 
 def draw_tag_fixes(vis, homo, fixes):
@@ -98,6 +111,12 @@ def main():
     tracker = Tracker(cfg, homo)
     tag_locator = TagLocator(cfg["tags"], homo, cfg["tracker"]["velocity_window_s"])
     tracks, fixes = [], []
+    rf_sim = RFSim(cfg)
+    interrogator = Interrogator(cfg["rf"]["challenge_hz"])
+    receiver = Receiver(wire.rf_key(cfg["rf"]["key"]), interrogator)
+    recent_claims, rejected = [], 0
+    RED_TEAM_KEYS = {ord("f"): "forged", ord("r"): "replay", ord("d"): "clone",
+                     ord("g"): "ghost", ord("j"): "jam"}
 
     clicks = []
     state = {"click_mode": False}
@@ -156,7 +175,17 @@ def main():
                         moved = d > cfg["camera_moved_px"]
 
                 tracks = tracker.update(frame, t)
-                fixes = tag_locator.update(frame, t)  # → RF simulator only (Phase 3)
+                fixes = tag_locator.update(frame, t)  # → RF simulator only, never the matcher
+
+                rf_sim.observe(t, fixes, tracks)
+                challenge = interrogator.poll(t)
+                if challenge:
+                    rf_sim.on_challenge(challenge, t)
+                claims, rejections = receiver.receive(rf_sim.poll(t), t)
+                recent_claims = [c for c in recent_claims if t - c["t"] < 0.45] + claims
+                for r in rejections:
+                    rejected += 1
+                    notify(f"RF REJECTED: {r['reason'].replace('_', ' ')}", 2.5)
 
         if args.headless:
             if args.max_frames and frames >= args.max_frames:
@@ -167,10 +196,12 @@ def main():
         if homo.ready:
             draw_table(vis, homo)
             draw_tracks(vis, tracks)
+            draw_claims(vis, homo, recent_claims)
             if args.debug_tags:
                 draw_tag_fixes(vis, homo, fixes)
         fps = 1.0 / dt_avg if dt_avg else 0.0
         lines = [f"t={t:7.2f}s  fps={fps:4.1f}  vehicles={len(tracks)}  [{cfg['detector']['backend']}]"
+                 + f"  RF rejected={rejected}" + ("  JAMMED" if rf_sim.channel.jammed else "")
                  + ("  PAUSED" if paused else "")]
         if state["click_mode"]:
             draw_clicks(vis, clicks)
@@ -202,6 +233,8 @@ def main():
                 notify("Captured empty-table background (table must be empty)")
             else:
                 notify(f"b only applies to the diff backend (current: {cfg['detector']['backend']})")
+        if key in RED_TEAM_KEYS:
+            notify(rf_sim.red_team(RED_TEAM_KEYS[key], t), 4.0)
         if key == ord("p"):
             paused = not paused
         if key == ord("h"):

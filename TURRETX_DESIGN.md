@@ -162,12 +162,15 @@ tests/           # matcher unit + metamorphic tests on synthetic tracks
 - **Attacker (red-team hotkeys, each also emits a banner event, R24):**
   - `f` **forged**: a reply with a bad signature → rejected
   - `r` **replay**: re-sends an old valid reply → rejected (stale nonce)
-  - `d` **cloned ID**: an attacker holding a captured key answers the challenge as Friendly-1 **from another vehicle's position** → two valid replies for one (nonce, rf_id) → **ID CONFLICT**
-  - `g` **ghost ID**: a valid reply at a position where no vehicle exists → ghost marker
+  - `d` **cloned ID** (toggle): an attacker holding a captured key answers the challenge as Friendly-1 **from another vehicle's position** → two valid replies for one (nonce, rf_id) → **ID CONFLICT**. The attacker follows its **physical** vehicle by position (nearest track to where it was, never within 12 cm of the friendly's sticker), not by track ID. *(Phase 2b bug: following a track ID made the clone jump onto the real friendly when the tracker swapped IDs in a crossing.)*
+  - `g` **ghost ID** (toggle): a valid reply at the emptiest spot in the arena → ghost marker
   - `j` **jam**: toggles RF loss → demonstrates coasting
 
+**Implementation (Phase 2b):** `wire.py` (payload encode/decode, HMAC, key from `TURRETX_RF_KEY` env var or the config demo key), `rfsim.py` (`FriendlyBeacon`, `Attacker`, `Channel` with jamming, `RFSim` orchestrator), `rfrx.py` (`Interrogator`, `Receiver`). Synthetic results: 5 replies/s per friendly, ~107 ms latency, 3.3 cm mean position error (3 cm noise per axis), RSSI spans ~11 dB across the arena.
+
 ### 5.5 RF receiver (`rfrx.py`)
-1. Recompute the HMAC over the **received payload bytes**; compare with `hmac.compare_digest` (R14) → otherwise `bad_signature`.
+0. Size limit (256 bytes) → otherwise `malformed`. **No parsing happens before the signature check.**
+1. Recompute the HMAC over the **received payload bytes**; compare with `hmac.compare_digest` (R14) → otherwise `bad_signature`. Then schema/range validation of the authenticated payload → otherwise `malformed`.
 2. Nonce must be one of the **last 3 issued** challenges → otherwise `stale_nonce`. (In live mode the nonce provides freshness; there's no clock sync with real hardware, R15.)
 3. **Second distinct valid reply for the same (nonce, rf_id)** → raise a `conflict` for that rf_id carrying both positions (R5). An exact byte duplicate → `replayed`.
 4. Output: `claims[]` (one per rf_id per nonce, or both sides of a conflict, flagged) and `rejections[]` (logged and shown in the event ticker).
@@ -380,7 +383,7 @@ matcher:
 - **"What if the enemy captures a friendly radio and key?"** They can answer challenges, but then two vehicles answer as the same ID, or the claim doesn't match any vehicle's motion. We show **ID CONFLICT — VERIFY** for the operator instead of trusting either.
 - **"What about jamming?"** The vehicle coasts with decaying confidence, then goes to UNKNOWN. **Never hostile by default.**
 - **"Is your RF just copying the camera?"** No. The simulated beacon gets its position from a separate sensor (the sticker stands in for the vehicle's own GPS), so tracker errors show up as mismatches. The stretch goal uses the car's real odometry.
-- **"Does it work on a moving drone?"** In production, the camera pose comes from the drone's GNSS/IMU/gimbal (or SLAM) to project the image onto the ground. In the demo, the corner markers stand in for that. Moving-camera homography is on the roadmap.
+- **"Does it work on a moving drone? You can't put markers on a battlefield."** Right: the markers stand in for the drone's **navigation pose**, just as the sticker stands in for the vehicle's GPS. A real UAV georeferences every frame directly: GNSS position + altitude + IMU attitude + gimbal angles + calibrated camera intrinsics give the camera pose, and for flat ground that pose produces exactly the same pixel→ground matrix the markers give us (`H = K·[r1 r2 t]`). Everything after it (tracking, matching, interlock, laser) is unchanged. Hilly terrain adds a DEM or a gimbal laser rangefinder; visual SLAM refines the pose between GNSS updates (see §14).
 - **"Why not just use IFF?"** IFF says *someone friendly is nearby*. Close air support needs *which vehicle in the sight picture*.
 - **"Edge compute?"** YOLOv8n runs in real time on a laptop RTX 3050, and a Jetson Orin-class module is the target. Quote the measured FPS and latency from the display.
 - **"Who decides to engage?"** The human operator. TurretX only labels and alerts, and never paints anything as "enemy".
@@ -487,3 +490,29 @@ matcher:
 | Laser turret (`turret.py`) | `agent-protocols:test-driven-development` | Unit-test the zone + interlock rules before connecting hardware |
 | Stretch: ESP32 / turret firmware | `c-pro` | Firmware edits (`harzard-poc` beacon, turret sketch) |
 | Fine-tune | `computer-vision-expert` | Check Roboflow export and training settings |
+
+---
+
+## 14. Path to a real UAV (pitch + roadmap)
+**What changes is only where the pixel→ground mapping comes from.**
+
+```
+Demo:   4 ArUco markers ─────────────┐
+                                     ├──► H (pixels → ground) ──► tracker → matcher → turret
+Drone:  GNSS + IMU + gimbal + K ─────┘    recomputed every frame
+```
+
+| Demo stand-in | Real UAV equivalent |
+|---|---|
+| ArUco corner markers → homography | **Direct georeferencing:** camera pose from GNSS (RTK for cm), barometer/laser altimeter, IMU attitude, gimbal encoders, and intrinsics `K` from a one-time checkerboard calibration. For flat ground, `H = K·[r1 r2 t]` |
+| Flat table plane | Flat-earth near the target, or a **DEM** (terrain model) / **gimbal laser rangefinder** for hills |
+| Table cm, 1 cm = 10 m scale | Real lat/lon / local metres. Friendly radios already report GNSS, so **both sides share world coordinates** |
+| Roof sticker → simulated GPS | The friendly vehicle's own GNSS/INS in its IFF reply |
+| Phone over USB → laptop RTX 3050 | Gimbal camera → onboard edge computer (Jetson Orin-class) |
+| Laser pointer turret | Operator-confirmed designation on the aircraft's sensor (interlock unchanged) |
+
+**What gets harder:**
+- **Accuracy is metres, not centimetres.** A 0.5° attitude error at 300 m slant range is ≈2.6 m on the ground; GNSS without RTK adds 2–5 m; frame/IMU time-sync errors add more. σp and the gate scale to metres, which is exactly why the **motion-consistency check** matters: position alone can't separate vehicles 5 m apart; motion over time can.
+- **Time sync:** every frame must be stamped against the same clock as the IMU and gimbal (the same principle as our single frame-timestamp clock, R3).
+- **Pose refinement:** visual odometry / SLAM between GNSS updates, or registration against satellite imagery. **This plays to Aerion's stated SLAM and edge-CV strengths, so it's a natural integration conversation.**
+
