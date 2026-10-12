@@ -27,6 +27,7 @@ from turretx.rfrx import Interrogator, Receiver
 from turretx.rfsim import RFSim
 from turretx.taglocator import TagLocator
 from turretx.tracker import DiffBackend, Tracker
+from turretx.udplink import UdpBeaconLink
 
 WINDOW = "TurretX"
 DRIFT_CHECK_EVERY = 30      # frames
@@ -77,6 +78,8 @@ def main():
     ap.add_argument("--backend", help="detector backend: yolo | yoloworld | diff")
     ap.add_argument("--weights", help="YOLO weights; comma-separated runs several, e.g. yolov8n.pt,models/vehicle.pt")
     ap.add_argument("--debug-tags", action="store_true", help="show the simulator-only sticker GPS")
+    ap.add_argument("--udp-beacon", nargs="?", const="", metavar="IP[,IP]",
+                    help="real beacons over WiFi UDP (rf.udp); optional rover IPs, default: learn them")
     ap.add_argument("--no-log", action="store_true", help="don't write logs/<time>.jsonl")
     ap.add_argument("--headless", action="store_true", help="no window (smoke tests)")
     ap.add_argument("--max-frames", type=int, default=0)
@@ -96,9 +99,37 @@ def main():
 
     tracker = Tracker(cfg, homo)
     tag_locator = TagLocator(cfg["tags"], homo, cfg["tracker"]["velocity_window_s"])
-    rf_sim = RFSim(cfg)
+    ucfg = dict(cfg["rf"].get("udp", {}))
+    if args.udp_beacon is not None:
+        ucfg["enabled"] = True
+        if args.udp_beacon:
+            ucfg["targets"] = [ip.strip() for ip in args.udp_beacon.split(",")]
+    udp = UdpBeaconLink(ucfg, wire.rf_key(cfg["rf"]["key"])) if ucfg.get("enabled") else None
+    real_ids = ucfg.get("ids", list(cfg["tags"])) if udp else []  # default: every friendly is real
+    if udp:
+        print(f"Real beacons over WiFi UDP: {', '.join(real_ids)} -> challenges to "
+              f"{', '.join(sorted(udp.targets)) or 'rovers learned from their telemetry'}")
+    rf_sim = RFSim(cfg, exclude=real_ids)
     interrogator = Interrogator(cfg["rf"]["challenge_hz"])
     receiver = Receiver(wire.rf_key(cfg["rf"]["key"]), interrogator)
+
+    def rf_round(t_now):
+        """One radio step: challenge simulated AND real beacons, collect every reply packet.
+        Jamming (simulation only, never transmitted) silences the real link too."""
+        ch = interrogator.poll(t_now)
+        if ch:
+            rf_sim.on_challenge(ch, t_now)
+            if udp and not rf_sim.channel.jammed:
+                udp.send_challenge(ch)
+        packets = rf_sim.poll(t_now)
+        if udp:
+            known = set(udp.targets)
+            real = udp.poll()  # always drained, so nothing stale is left after a jam
+            for ip in sorted(udp.targets - known):
+                notify(f"Real beacon found at {ip}")
+            if not rf_sim.channel.jammed:
+                packets += real
+        return packets
     matcher = Matcher(cfg)
     failsafe = Failsafe()
     rcfg = cfg.get("relay", {})
@@ -150,10 +181,7 @@ def main():
                 no_signal = True  # live source dropped: keep the window up, camera reconnects
                 t_now = cam.now()  # RF keeps running without frames; the matcher ages custody and RF DENIED
                 if t_now is not None and t_now > t:
-                    ch = interrogator.poll(t_now)
-                    if ch:
-                        rf_sim.on_challenge(ch, t_now)
-                    claims, rejections = receiver.receive(rf_sim.poll(t_now), t_now)
+                    claims, rejections = receiver.receive(rf_round(t_now), t_now)
                     rejected += len(rejections)
                     for c in claims:
                         last_claims[c["rf_id"]] = c
@@ -189,10 +217,7 @@ def main():
                 tracks = tracker.update(frame, t) if rung in ("L0", "L1") else []
                 fixes = tag_locator.update(frame, t)  # → RF simulator only, never the matcher
                 rf_sim.observe(t, fixes, tracks)
-                challenge = interrogator.poll(t)
-                if challenge:
-                    rf_sim.on_challenge(challenge, t)
-                claims, rejections = receiver.receive(rf_sim.poll(t), t)
+                claims, rejections = receiver.receive(rf_round(t), t)
                 rejected += len(rejections)
                 for c in claims:
                     last_claims[c["rf_id"]] = c
@@ -308,6 +333,8 @@ def main():
             break
 
     cam.release()
+    if udp:
+        udp.close()
     events.close()
     cv2.destroyAllWindows()
     friendly = sum(1 for lab in out["labels"].values() if lab["state"] == "FRIENDLY")

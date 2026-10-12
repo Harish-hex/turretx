@@ -54,6 +54,13 @@ rf:
   latency_ms: 100
   pos_noise_cm: 3
   rssi: {p0: -40, n: 2.2, noise_db: 3, drone_alt_m: 300}
+  udp:                      # REAL beacons over WiFi UDP (firmware/turretx_rover, turretx/udplink.py)
+    enabled: false          # or run with --udp-beacon [ip,ip]
+    ids: [F-1]              # answered by hardware: their simulated beacons are switched off
+    targets: [auto]         # auto = learn rover IPs from their signed telemetry; or list the IPs
+    challenge_port: 4210
+    reply_port: 4211
+    telemetry_port: 4212
 
 matcher:
   sigma_pos_cm: 8

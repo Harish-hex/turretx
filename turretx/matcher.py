@@ -42,6 +42,7 @@ class Matcher:
         self.tracks = {}         # track_id → _Track
         self.ghost_since = {}    # rf_id → t
         self.lost = []           # last-known positions of friendlies whose tracks vanished
+        self.rssi_known = {}     # rf_id → False for hardware beacons (their RSSI isn't the drone's view)
 
     # ---------------------------------------------------------------- scoring
     def _instant(self, claim, track):
@@ -70,12 +71,16 @@ class Matcher:
             M = 0.5
         informative = (heading_on or abs(ds) > 2 * c["sigma_speed"]) and not unsettled
 
-        exp_rssi = expected_rssi(track["x"], track["y"], self.arena, self.scale, self.rssi_cfg)
-        R = math.exp(-(claim["rssi"] - exp_rssi) ** 2 / (2 * c["sigma_rssi_db"] ** 2))
+        R = 0.0  # no evidence (shown as 0, left out of the confidence by _combined)
+        if claim.get("rssi_known", True):
+            exp_rssi = expected_rssi(track["x"], track["y"], self.arena, self.scale, self.rssi_cfg)
+            R = math.exp(-(claim["rssi"] - exp_rssi) ** 2 / (2 * c["sigma_rssi_db"] ** 2))
         return P, M, R, informative, low_info
 
-    def _combined(self, s):
+    def _combined(self, s, rid):
         w = self.c["weights"]
+        if not self.rssi_known.get(rid, True):  # no RSSI evidence: P and M carry the weight
+            return (w["P"] * s["P"] + w["M"] * s["M"]) / (w["P"] + w["M"])
         return w["P"] * s["P"] + w["M"] * s["M"] + w["R"] * s["R"]
 
     def _smoothed(self, key, P, M, R, t):
@@ -103,6 +108,7 @@ class Matcher:
                 cur.append(cl)
             self.rf_last_rx[rid] = t
             self.last_rx = t
+            self.rssi_known[rid] = cl.get("rssi_known", True)
 
         active = [cl for rid, lst in sorted(self.claims.items())
                   if t - lst[0]["t"] <= c["claim_max_age_s"] for cl in lst]
@@ -134,7 +140,7 @@ class Matcher:
             for i, cl in enumerate(active):
                 for j, k in enumerate(tracks):
                     if (i, k["track_id"]) in inst:
-                        cost[i, j] = 1 - self._combined(smooth_now[(cl["rf_id"], k["track_id"])])
+                        cost[i, j] = 1 - self._combined(smooth_now[(cl["rf_id"], k["track_id"])], cl["rf_id"])
             for i, j in zip(*linear_sum_assignment(cost)):
                 if cost[i, j] < GATED:
                     tid = tracks[j]["track_id"]
@@ -146,12 +152,12 @@ class Matcher:
             rid = active[i]["rf_id"]
             if rid in conflict_ids:
                 continue
-            best = self._combined(s)
+            best = self._combined(s, rid)
             for k in tracks:
                 o = k["track_id"]
                 if o == tid or (i, o) not in inst:
                     continue
-                r = self._combined(smooth_now[(rid, o)])
+                r = self._combined(smooth_now[(rid, o)], rid)
                 if r >= c["ambiguity_floor"] and best - r <= c["ambiguity_margin"]:
                     ambiguous.update({tid, o})
 
@@ -184,7 +190,7 @@ class Matcher:
                 i, s = assigned[tid]
                 rid = active[i]["rf_id"]
                 _, _, _, informative, low_info = inst[(i, tid)]
-                conf = self._combined(s)
+                conf = self._combined(s, rid)
                 scores = {"P": s["P"], "M": s["M"], "R": s["R"]}
                 if low_info:
                     flags.append("low_info")

@@ -63,6 +63,8 @@ class Receiver:
             if claim is None:
                 rejections.append({"t": t, "reason": "malformed", "rf_id": None})
                 continue
+            # hardware beacons report their own WiFi RSSI, not the drone's view (udplink.py)
+            claim["rssi_known"] = pkt.get("rssi_known", True)
             if not self.interrogator.is_current(claim["nonce"]):
                 rejections.append({"t": t, "reason": "stale_nonce", "rf_id": claim["rf_id"]})
                 continue

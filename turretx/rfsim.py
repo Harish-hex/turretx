@@ -169,13 +169,16 @@ class RFSim:
          claims, rejections = receiver.receive(sim.poll(t), t)
     """
 
-    def __init__(self, cfg, seed=None):
+    def __init__(self, cfg, seed=None, exclude=()):
+        """exclude: rf_ids answered by real hardware (udplink.py): no simulated beacon for them,
+        otherwise the real and simulated F-1 would both answer and look like a clone."""
         rf = dict(cfg["rf"], scale_m_per_cm=cfg["scale_m_per_cm"])
         self.latency = rf["latency_ms"] / 1000
         key = wire.rf_key(rf["key"])
         rng = random.Random(seed)
         arena = cfg["table_cm"]
-        self.beacons = {rf_id: FriendlyBeacon(rf_id, key, rf, arena, rng) for rf_id in cfg["tags"]}
+        self.beacons = {rf_id: FriendlyBeacon(rf_id, key, rf, arena, rng)
+                        for rf_id in cfg["tags"] if rf_id not in set(exclude)}
         self.attacker = Attacker(key, rf, arena, rng, target_id=next(iter(cfg["tags"]), "F-1"))
         self.channel = Channel()
         self.tracks = []
