@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Ultralytics auto-downloaded base weights and training output
+/*.pt
+runs/
+
+# Fine-tuned weights we DO want to share go in models/ (keep them, they're ~6 MB)
+!models/*.pt
+
+# Runtime logs
+logs/
+
+# The pitch deck PDF is 34 MB; its content is summarised in TURRETX_DESIGN.md
+*.pdf
+
+.DS_Store
+Thumbs.db
