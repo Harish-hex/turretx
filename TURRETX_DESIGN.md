@@ -146,6 +146,7 @@ tests/           # matcher unit + metamorphic tests on synthetic tracks
 - Every ~30 frames, if ≥3 markers are visible, compare their detected positions with the calibrated ones. If the error is above ~8 px → banner **"CAMERA MOVED — press h"**.
 
 ### 5.3 Tag locator (simulator-only GPS) (R1)
+- **UPDATE (Eval 2 prep): disc mode.** The only sticker the team has is the round SIST2026 event sticker, so `tags.<rf_id>.mode: disc` finds a dark disc inside a light ring **by shape** (outline projected to arena cm, circularity ≥ 0.82, fill ≥ 0.5, size 0.75–1.35× `diameter_cm`; ArUco markers, arena corners and elongated car bodies are rejected; a light ring separates it from a dark roof). Supports **one** disc tag (identical discs can't be told apart at ~2 m). The colour (`hsv`) mode below still works. The bullets below describe the original colour mode.
 - Each friendly car has a **matte coloured sticker** (about 3×3 cm) on its roof, in a colour that appears nowhere else in the scene (pick it at scene setup; HSV range in config). Friendly-1 = colour 1, Friendly-2 = colour 2. **No click-binding is needed.**
 - Per frame: HSV threshold → largest blob → centroid → homography → cm. Velocity by least-squares over ~1 s.
 - **Firewall:** `taglocator` output goes **only** to `rfsim`. The tracker and matcher never import it. This is what makes the matching non-circular: if the tracker swaps IDs in a crossing, the RF truth still follows the *physical* car, so the swap shows up as a mismatch.
@@ -224,7 +225,22 @@ For every (claim *c*, track *k*) pair:
 - **Implementation:** `display.py` (video overlay with drawn icons, dashed box for COASTING, side panel with mini-map in scenario km, selected-vehicle P/M/R/confidence bars and time in state, legend, event ticker; window scaled to `display.max_width`), `events.py` (diffs matcher output each frame → ticker + JSONL; beeps once when a vehicle turns SUSPICIOUS). A persistent `VERIFY: #n …` banner lists every SUSPICIOUS vehicle.
 
 ### 5.8 Hotkeys
-`h` calibrate homography · `b` capture empty-table background · Tab / click: select vehicle · `m` **mark** the cued/selected vehicle (laser blinks) · `x` cancel mark / laser off · `t` turret calibration · `f` forged · `r` replay · `d` cloned ID · `g` ghost · `j` jam toggle · `p` pause · `q` quit
+`h` calibrate homography · `b` capture empty-table background · Tab / click: select vehicle · `m` **mark** the cued/selected vehicle (laser blinks) · `x` cancel mark / laser off · `t` turret calibration · `f` forged · `r` replay · `d` cloned ID · `g` ghost · `j` jam toggle (IFF link **and** relay) · `c` kill/restore camera (failsafe demo) · `a` re-arm designation · `k` relay barrier · `n` send relay message · `v` forged relay msg · `e` replay relay msg · `p` pause · `q` quit
+
+### 5.11 Camera-loss failsafe (`failsafe.py`) — added after the first jury review
+Jury question: *"do you have a failsafe in case the camera fails?"* Research: `reports/Camera failsafe and airborne relay.md`.
+- **Health** (per loop): LOST if no frame for 0.5 s, a black frame (mean grey < 8, lens covered), a frozen frame (~1 s of identical frames **while RF says vehicles move**), or the operator kill (`c`); DEGRADED on homography drift. The sticker locator keeps running after a `c` kill (it stands in for GPS, which needs no camera); physically covering the lens loses it too, so the display then falls to L3.
+- **Rungs:** L0 full fusion · L1 degraded (labels stay, designation locked) · L2 RF-only (camera lost, claims alive: schematic map of authenticated friendlies with beacon age, banner "non-transmitting vehicles NOT visible") · L3 last-known (claims stale: amber markers, growing no-fire ring, LOST FRIENDLY) · L4 safe state (nothing known).
+- **Rules:** labels only move toward UNKNOWN and designation only toward OFF; **nothing re-arms by itself**: after the camera returns the operator presses `a` (refused unless L0). `designation_allowed` is exposed for `turret.py` (not built yet). Thresholds (0.5 s, 1 s, grey 8) are engineering choices, not standards.
+- Tests: `tests/test_failsafe.py`, RF-only render in `tests/test_display.py`.
+
+### 5.12 Comms relay (`relay.py`, `commshub.py`) — "comms centre in the sky"
+Jury idea: the drone also acts as a communication relay for friendlies when ground comms are jammed, so it stays useful if its camera is lost. Approach: `RELAY_INTEGRATION.md`. Evidence: `reports/Camera failsafe and airborne relay.md`, `turretx_airborne_relay_market_study.xlsx` (claim discipline: tactical authenticated relay + blue-force tracking only; **no** anti-jam performance, HAPS or SATCOM claims; ESP-NOW is a demo radio).
+- **Simulation only.** No RF is transmitted. "Jamming" is a flag (`j`); a barrier (`k`) blocks the direct ground link so traffic goes via the drone. Real jammers are illegal in India (Wireless Telegraphy Act 1933; DoT advisory 2022).
+- **Protocol (`relay.py`):** HMAC-signed JSON messages (types txt/pos/sys/rcpt, priority alert > status > chat, TTL); seen-set replay protection (not a monotonic counter) plus freshness; bounded queue (drops oldest lowest-priority); signed delivery receipts; jam detection by **consistency** (low delivery **and** high noise = jamming; low delivery on a quiet channel = blocked path); keyed channel hop (HMAC-derived schedule) that flushes the queue in priority order. Delivery is behind a `Link` interface (`SimLink` now; an ESP32 serial bridge later).
+- **Hub (`commshub.py`):** broadcasts a priority alert when the camera is lost / restored; in L2/L3 broadcasts the blue-force picture (positions + age) from authenticated claims; shares one simulated jam between IFF and relay (`relay.hop_restores_iff`: true = IFF recovers after the hop, false = keep the jam-first demo); demo hotkeys.
+- **Firewall:** comms never decide identity. `matcher.py`, `tracker.py`, `rfrx.py` etc. must not import `relay` or `commshub` (AST test in `tests/test_relay.py`).
+- **Display panel:** step 3 (not built at the time of writing; see `STATUS.md`).
 
 ### 5.10 Real ESP32 beacon: MPU6050-only motion signature (stretch #5, decided 2026-10-12)
 The RC car carries an ESP32-S3 + MPU6050 and **no wheel encoder**. Integrated speed/distance/position from an accelerometer drift within seconds (a parked car would soon "report" motion, the exact false-MISMATCH trap fixed in Phase 3), so the real beacon does **not** send position. It sends a **motion signature**, and the matcher asks *"is exactly one tracked vehicle moving the way this radio says it is?"*
@@ -480,6 +496,11 @@ matcher:
 | 27 | Matcher smoothing is time-based (τ), not per-frame α; ID CONFLICT enters immediately | Per-frame EMA α=0.3; 1 s entry for all states | Frame-rate independence (metamorphic test); security alerts and the interlock must not wait |
 | 28 | Velocity history resets on implausible jumps / box-area jumps; `settled` and `merged` flags; unsettled → no mismatch; merged blob → TOO CLOSE | Fit through jumps | End-to-end run showed the real friendly flagged MOTION MISMATCH after every crossing |
 | 29 | **Real beacon = MPU6050 motion signature (yaw rate + start/stop), no position** (§5.10) | Integrated speed/position; add wheel encoder | No encoder on the car; integrated IMU drifts within seconds; signature matching needs no position and is harder to spoof |
+| 30 | **Disc-sticker detection by shape** for the one round event sticker (§5.3) | Colour patch only | The only sticker available is round and multi-coloured; colour thresholds fail on it |
+| 31 | **Camera-loss failsafe ladder L0–L4**, labels only toward UNKNOWN, no automatic re-arm (§5.11) | Shut down on camera loss | Jury asked for a worst-case failsafe; fail-soft stays useful (RF-only blue-force picture) and is the safe direction |
+| 32 | **Comms relay as simulated, authenticated, protocol-complete** (§5.12) | Real radios / real jammers; analog repeater | Hackathon timebox; real jamming is illegal in India; the HMAC identity layer is reused as the trust anchor |
+| 33 | **Comms are firewalled from identity** | Let relay messages feed the matcher | A message must never be able to make a vehicle FRIENDLY |
+| 34 | **One shared simulated jam; a hop restores IFF** (flag `hop_restores_iff`) | Separate jams | Coherent demo story: jam → RF DENIED → detect → hop → recovery |
 
 ---
 
