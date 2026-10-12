@@ -44,7 +44,7 @@ def main():
     for key, val in [("backend", args.backend), ("weights", args.weights), ("conf", args.conf),
                      ("ground_point_frac", args.ground_frac)]:
         if val is not None:
-            d[key] = val
+            d[key] = [w.strip() for w in val.split(",")] if key == "weights" else val
     if args.background:
         d["diff"]["background"] = args.background
 

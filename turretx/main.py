@@ -75,7 +75,7 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--source", help="webcam index, video file or URL (overrides config)")
     ap.add_argument("--backend", help="detector backend: yolo | yoloworld | diff")
-    ap.add_argument("--weights", help="YOLO weights, e.g. yolo26n.pt or models/vehicle.pt")
+    ap.add_argument("--weights", help="YOLO weights; comma-separated runs several, e.g. yolov8n.pt,models/vehicle.pt")
     ap.add_argument("--debug-tags", action="store_true", help="show the simulator-only sticker GPS")
     ap.add_argument("--no-log", action="store_true", help="don't write logs/<time>.jsonl")
     ap.add_argument("--headless", action="store_true", help="no window (smoke tests)")
@@ -86,7 +86,7 @@ def main():
     if args.backend:
         cfg["detector"]["backend"] = args.backend
     if args.weights:
-        cfg["detector"]["weights"] = args.weights
+        cfg["detector"]["weights"] = [w.strip() for w in args.weights.split(",")]
     source = parse_source(args.source if args.source is not None else cfg["camera"]["source"])
     cam = Camera(source, cfg["camera"]["width"], cfg["camera"]["height"])
     homo = Homography(cfg["table_cm"], cfg["aruco"]["dict"], cfg["aruco"]["ids"])

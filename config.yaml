@@ -14,8 +14,12 @@ display: {max_width: 1600}   # window is scaled down to fit this width
 
 detector:
   backend: yolo             # yolo | yoloworld | diff
-  weights: yolov8n.pt
-  conf: 0.2
+  # One file or a list. A list runs every model and merges overlapping boxes into one vehicle:
+  # stock yolov8n.pt finds the toy cars, models/vehicle.pt (trained on our makeshift vehicle) finds that one.
+  weights: [yolov8n.pt, models/vehicle.pt]
+  merge_iou: 0.3            # boxes overlapping this much (IoU) are the same vehicle
+  merge_contain: 0.7        # ... or when the smaller box is this much inside the bigger one
+  conf: [0.2, 0.5]          # one value, or one per weights file: low for stock toy cars, stricter for vehicle.pt
   imgsz: 960               # larger input helps small vehicles seen from high up
   exclude_classes: [person]
   classes_text: ["toy car"] # yoloworld only

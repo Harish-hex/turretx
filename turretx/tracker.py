@@ -1,7 +1,9 @@
 """Vehicle detection + tracking → Track dicts in table cm (design §5.1, contract §6).
 
 Backends (config detector.backend):
-  yolo       Ultralytics YOLO (yolov8n.pt, yolo26n.pt, or fine-tuned models/vehicle.pt) + ByteTrack
+  yolo       Ultralytics YOLO + ByteTrack. detector.weights is one file or a list, e.g.
+             [yolov8n.pt, models/vehicle.pt]: every model runs, overlapping boxes are merged into one
+             and a single ByteTrack follows the merged boxes (one vehicle = one track)
   yoloworld  YOLO-World with text classes (e.g. "toy car") + ByteTrack
   diff       difference from an empty-table reference frame + a small centroid tracker
 Identity is NOT decided here; this module only finds and follows vehicles.
@@ -32,32 +34,98 @@ def pick_device():
     return "cpu"
 
 
+def _overlap(a, b):
+    """(IoU, intersection ÷ smaller box area) of two xyxy boxes."""
+    iw = min(a[2], b[2]) - max(a[0], b[0])
+    ih = min(a[3], b[3]) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0:
+        return 0.0, 0.0
+    inter = iw * ih
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    return inter / (area_a + area_b - inter), inter / max(min(area_a, area_b), 1e-9)
+
+
+def merge_overlapping(dets, iou=0.3, contain=0.7):
+    """Merge boxes that are the same vehicle seen twice (two models, or two classes of one model).
+    dets: [((x1, y1, x2, y2), conf)]. Two boxes merge if IoU >= `iou` or the smaller one is at least
+    `contain` inside the other; merging is transitive. Each group → (union box, best conf), ordered
+    by best conf. Boxes that only touch stay separate (two cars parked side by side)."""
+    n = len(dets)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            o_iou, o_contain = _overlap(dets[i][0], dets[j][0])
+            if o_iou >= iou or o_contain >= contain:
+                parent[find(i)] = find(j)
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(dets[i])
+    merged = []
+    for members in groups.values():
+        boxes = [b for b, _ in members]
+        union = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+                 max(b[2] for b in boxes), max(b[3] for b in boxes))
+        merged.append((tuple(float(v) for v in union), max(float(c) for _, c in members)))
+    return sorted(merged, key=lambda m: (-m[1], m[0]))
+
+
 class YoloBackend:
     def __init__(self, dcfg, world=False):
         from ultralytics import YOLO, YOLOWorld
 
-        self.device = pick_device()
-        self.conf = dcfg["conf"]
-        self.imgsz = dcfg["imgsz"]
         if world:
-            self.model = YOLOWorld(dcfg.get("world_weights", "yolov8s-world.pt"))
-            self.model.set_classes(dcfg["classes_text"])
-            self.classes = None
+            model = YOLOWorld(dcfg.get("world_weights", "yolov8s-world.pt"))
+            model.set_classes(dcfg["classes_text"])
+            models = [(model, None)]
         else:
-            self.model = YOLO(dcfg["weights"])
+            weights = dcfg["weights"]
             excluded = set(dcfg.get("exclude_classes", []))
-            self.classes = [i for i, n in self.model.names.items() if n not in excluded]  # R7: no people/hands
+            models = []
+            for w in [weights] if isinstance(weights, str) else list(weights):
+                model = YOLO(w)
+                models.append((model, [i for i, n in model.names.items() if n not in excluded]))  # R7: no people/hands
+        self._init_tracking(dcfg, models)
+
+    def _init_tracking(self, dcfg, models):
+        from ultralytics.trackers.byte_tracker import BYTETracker
+        from ultralytics.utils import YAML, IterableSimpleNamespace
+
+        self.device = pick_device()
+        conf = dcfg["conf"]  # one value, or one per weights file (a custom model can be stricter)
+        self.confs = list(conf) if isinstance(conf, (list, tuple)) else [conf] * len(models)
+        if len(self.confs) != len(models):
+            raise ValueError(f"detector.conf has {len(self.confs)} values for {len(models)} weights")
+        self.conf = min(self.confs)
+        self.imgsz = dcfg["imgsz"]
+        self.merge_iou = dcfg.get("merge_iou", 0.3)
+        self.merge_contain = dcfg.get("merge_contain", 0.7)
+        self.models = models
+        self.model, self.classes = models[0]
+        self.tracker = BYTETracker(IterableSimpleNamespace(**YAML.load(BYTETRACK_YAML)))
 
     def update(self, frame):
         """[(track_id, (x1, y1, x2, y2), conf)]"""
-        r = self.model.track(frame, persist=True, tracker=BYTETRACK_YAML, conf=self.conf,
-                             imgsz=self.imgsz, classes=self.classes, device=self.device, verbose=False)[0]
-        if r.boxes is None or r.boxes.id is None:
-            return []
-        ids = r.boxes.id.int().tolist()
-        boxes = r.boxes.xyxy.cpu().numpy()
-        confs = r.boxes.conf.cpu().numpy()
-        return [(i, tuple(b), float(c)) for i, b, c in zip(ids, boxes, confs)]
+        from ultralytics.engine.results import Boxes
+
+        dets = []
+        for (model, classes), conf in zip(self.models, self.confs):
+            r = model.predict(frame, conf=conf, imgsz=self.imgsz, classes=classes, device=self.device,
+                              agnostic_nms=True, verbose=False)[0]
+            if r.boxes is not None and len(r.boxes):
+                dets += [(tuple(b), float(c)) for b, c in
+                         zip(r.boxes.xyxy.cpu().numpy(), r.boxes.conf.cpu().numpy())]
+        merged = merge_overlapping(dets, self.merge_iou, self.merge_contain)
+        data = np.array([[*b, c, 0] for b, c in merged], np.float32).reshape(-1, 6)
+        tracked = self.tracker.update(Boxes(data, frame.shape[:2]), frame)
+        return [(int(t[4]), tuple(float(v) for v in t[:4]), float(t[5])) for t in tracked]
 
 
 class CentroidTracker:

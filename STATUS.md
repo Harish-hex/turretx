@@ -19,6 +19,7 @@ Machines: code is written on a Mac (M1, `.venv`, MPS); the demo runs on a Window
 | Relay wired into the app (`commshub.py`, hotkeys, shared jam/hop) | done, glue in `main.py` untested except a headless smoke | 08b5b90 |
 | Comms panel in `display.py` (channel, jam/barrier banners, queue, last messages with route + receipt) | done; looked at as a rendered image, not yet in the live window | next commit |
 | `SerialLink` to ESP32 bridges | **next, optional**, only if firmware is ready | — |
+| Multi-weights detection: `weights: [yolov8n.pt, models/vehicle.pt]`, overlapping boxes merged, one ByteTrack, per-model `conf: [0.2, 0.5]`; `models/vehicle.pt` trained on the 3050 from the makeshift-vehicle video (auto-labelled) | done on the 3050, **uncommitted**; `tests/test_multiweights.py` | — |
 | Real-camera detection tuning on the 3050 | open; model struggles at distance (ideas: crop to arena before YOLO, diff backend as primary, higher imgsz, fine-tune) | — |
 | `turret.py` (laser, zone, interlock, serial) | not built; spec in design §5.9 | — |
 | MPU6050 motion-signature matching | not built; spec in design §5.10 | — |
