@@ -103,6 +103,7 @@ class CommsNet:
         self.n_channels = self.link.n_channels
         self.hop_k, self.hops = 0, 0
         self.link.set_channel(hop_channel(key, 0, self.n_channels))
+        self.packets = {}              # id -> packet for the most recent sends (red-team replay)
         self.log = []                  # dicts: t, src, dst, text, route, type, id, detail
         self.status = {}               # (src, seq) -> queued | delivered | receipted | expired | dropped | rejected
         self._pending = []
@@ -142,7 +143,22 @@ class CommsNet:
             self._pending.remove(victim)
         self._pending.append(entry)
         self.status[mid] = "queued"
+        self.packets[mid] = entry["packet"]
+        if len(self.packets) > 50:
+            del self.packets[next(iter(self.packets))]
         return mid
+
+    def summary(self, tail=6):
+        """Everything the comms panel shows: channel, flags, queue and the last few messages."""
+        shown = [m for m in self.log if m["type"] != "rcpt" and m["route"] != "queued"]
+        rows = []
+        for m in shown[-tail:]:
+            st = self.status.get(m["id"]) if m["id"] else None
+            rows.append({"t": m["t"], "src": m["src"], "dst": m["dst"], "text": m["text"],
+                         "route": m["route"], "detail": m["detail"], "state": st})
+        return {"channel": self.channel, "hops": self.hops, "jam_suspected": self.jam_suspected,
+                "queued": self.queued, "barrier": getattr(self.link, "direct_blocked", False),
+                "messages": rows}
 
     def inject(self, t, packet):
         """A packet arriving at the drone from outside the queue (red team, or a real radio)."""

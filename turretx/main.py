@@ -16,6 +16,7 @@ import numpy as np
 
 from turretx import wire
 from turretx.camera import Camera
+from turretx.commshub import CommsHub
 from turretx.config import load_config, parse_source
 from turretx.display import AMBER, MAGENTA, WHITE, Display
 from turretx.events import EventLog
@@ -32,6 +33,7 @@ DRIFT_CHECK_EVERY = 30      # frames
 AUTO_CALIBRATE_EVERY = 15   # frames, until calibrated
 CORNER_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"]
 RED_TEAM_KEYS = {ord("f"): "forged", ord("r"): "replay", ord("d"): "clone", ord("g"): "ghost", ord("j"): "jam"}
+RELAY_KEYS = (ord("k"), ord("n"), ord("v"), ord("e"))  # barrier, send message, forged, replay
 TAB, ESC = 9, 27
 
 
@@ -99,6 +101,8 @@ def main():
     receiver = Receiver(wire.rf_key(cfg["rf"]["key"]), interrogator)
     matcher = Matcher(cfg)
     failsafe = Failsafe()
+    rcfg = cfg.get("relay", {})
+    hub = CommsHub(wire.rf_key(cfg["rf"]["key"]), rcfg) if rcfg.get("enabled") else None
     last_claims = {}  # rf_id -> newest authenticated claim ever received (RF-only map, EVAL2_PLAN §1)
     events = EventLog(sound=not args.headless, write=not args.no_log)
     display = Display(cfg, homo)
@@ -196,6 +200,12 @@ def main():
                 out = matcher.update(t, tracks, claims)
                 events.update(t, out, rejections)
 
+        if hub:
+            for kind, msg in hub.step(t, rung, last_claims):
+                events.add(t, kind, msg)
+            if hub.hop_restores_iff:
+                rf_sim.channel.jammed = hub.iff_jammed()
+
         if args.headless:
             if args.max_frames and frames >= args.max_frames:
                 break
@@ -238,7 +248,8 @@ def main():
         view = {"t": t, "fps": 1.0 / dt_avg if dt_avg else 0.0, "latency_ms": cam.latency_ms(t),
                 "backend": cfg["detector"]["backend"], "tracks": tracks if homo.ready else [],
                 "out": out, "claims": recent_claims if homo.ready else [], "rejected": rejected,
-                "jammed": rf_sim.channel.jammed, "rung": rung, "last_claims": last_claims, "selected": ui["selected"], "banners": banners,
+                "jammed": rf_sim.channel.jammed, "rung": rung, "last_claims": last_claims,
+                "comms": hub.summary() if hub else None, "selected": ui["selected"], "banners": banners,
                 "events": list(events.ticker), "time_in_state": lambda tid: events.time_in_state(tid, t)}
         ui["view"], ui["video_w"] = view, vis.shape[1]
         canvas = display.render(vis, view)
@@ -265,8 +276,15 @@ def main():
                 notify(f"b only applies to the diff backend (current: {cfg['detector']['backend']})")
         if key in RED_TEAM_KEYS:
             msg = rf_sim.red_team(RED_TEAM_KEYS[key], t)
+            if hub and RED_TEAM_KEYS[key] == "jam":
+                hub.set_jam(rf_sim.channel.jammed)  # one simulated jam for the IFF link and the relay
             events.add(t, "redteam", msg)
             notify(msg, 4.0, MAGENTA)
+        if hub and key in RELAY_KEYS:
+            msg = {ord("k"): hub.toggle_barrier, ord("n"): lambda: hub.send_demo(t),
+                   ord("v"): lambda: hub.forged(t), ord("e"): lambda: hub.replay(t)}[key]()
+            events.add(t, "relay", msg)
+            notify(msg, 4.0, MAGENTA if key in (ord("v"), ord("e")) else WHITE)
         if key == ord("c"):
             failsafe.kill(not failsafe.killed)
             msg = "Camera KILLED (simulated failure)" if failsafe.killed else "Camera restored - press a to re-arm"

@@ -70,3 +70,10 @@ matcher:
   coast_max_s: 60            # track custody: max time a silent friendly keeps its identity
   custody_radius_cm: 15      # another vehicle this close breaks custody
   rf_denied_s: 2.0           # no valid claims for this long → RF DENIED
+
+relay:               # simulated comms relay (RELAY_INTEGRATION.md); no RF is transmitted
+  enabled: true
+  nodes: [F-1, F-2]
+  channels: 4
+  hop_restores_iff: true   # false = keep the jam-first demo (RF DENIED stays after the hop)
+  pos_every_s: 2.0         # RF-only mode: how often the drone broadcasts the blue-force picture

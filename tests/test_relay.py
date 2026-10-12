@@ -228,4 +228,4 @@ def test_identity_modules_never_import_the_relay():
                 mods = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom):
                 mods = [node.module or ""] + [a.name for a in node.names]
-            assert not any(m.split(".")[-1] == "relay" for m in mods), f"{name} imports relay"
+            assert not any(m.split(".")[-1] in ("relay", "commshub") for m in mods), f"{name} imports relay"
