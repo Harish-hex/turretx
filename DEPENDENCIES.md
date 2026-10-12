@@ -62,6 +62,12 @@ cameras:
 **If it says "no GPU detected":** the driver is too old, or the CPU-only torch got installed. Re-run
 `uv pip install --reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126` inside the venv.
 
+### Laptop power settings (RTX 3050 has 4 GB VRAM and throttles on battery)
+- Always **on charger** while running or training.
+- Windows: Settings → System → Power → **Best performance**.
+- Don't fine-tune YOLO while the live pipeline is running (VRAM).
+- Before judging, run the full pipeline for 10 minutes and watch that FPS stays steady (thermal soak).
+
 ### Daily use
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -95,9 +101,19 @@ The camera source is a setting in `config.yaml`: a webcam index (e.g. `1`), a vi
 ## 5. Physical scene checklist (teammates)
 - [ ] Plain, single-colour, matte surface (table or floor), about 100 × 60 cm. Measure it exactly and put the numbers in `config.yaml`.
 - [ ] 4 **ArUco markers** (DICT_4X4_50, IDs 0–3), printed about 8 cm wide, taped at the corners: 0 = top-left, 1 = top-right, 2 = bottom-right, 3 = bottom-left. Generator: https://chev.me/arucogen/
-- [ ] Even lighting, no harsh moving shadows (avoid windows behind)
+- [ ] Even, diffuse lighting, no harsh moving shadows (avoid windows behind)
 - [ ] 3–4 toy/RC cars that look different from each other and contrast with the surface
-- [ ] Phone mount: tripod with an arm, a selfie stick taped to a chair, or a broomstick across two chairs
+- [ ] **No hands in frame:** use RC cars, or move toy cars with thin sticks or thread. Hands get detected as vehicles.
+- [ ] **Roof sticker on each friendly car** (~3×3 cm, matte), in a colour that appears **nowhere else** in the scene (bright pink/magenta or neon green usually works). Friendly-1 and Friendly-2 get different colours. This sticker is the simulator's stand-in for the vehicle's GPS.
+- [ ] Phone mount: tripod with an arm, a selfie stick taped to a chair, or a broomstick across two chairs. **Angle ≥60°** (steeper is more accurate). Once calibrated, **don't touch it**.
+- [ ] A marked start spot + direction on the table for the ESP32 car (stretch goal only)
+
+### Laser turret (electronics team), see TURRETX_DESIGN.md §5.9
+- [ ] ESP32 + 2 servos (pan/tilt bracket) + **Class 2 (<1 mW) laser pointer** switched through a transistor (not straight off a GPIO pin)
+- [ ] Servos on their **own 5 V supply** with common ground (servos browning out the ESP32 is the classic failure)
+- [ ] Firmware: serial 115200 baud, commands `P <pan*10> <tilt*10>`, `L 0|1|2`, `H` (reply `OK` / `ERR`). **Clamp servo angles to the table area. Laser OFF at power-up. Laser OFF if no `H` heartbeat for 500 ms**
+- [ ] Mount it rigidly above or beside the table so it can reach the whole designation zone. Once calibrated, don't move it
+- [ ] Note the COM port in Device Manager → Ports and put it in `config.yaml` (`turret.port`)
 
 ---
 
@@ -121,3 +137,5 @@ The camera source is a setting in `config.yaml`: a webcam index (e.g. `1`), a vi
 | YOLO-World fails on `set_classes` | Git is missing or there's no internet. Re-run `python scripts/prefetch.py` |
 | `CUDA out of memory` while training | `batch=4` |
 | PowerShell blocks `Activate.ps1` | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
+| FPS drops after a few minutes | On battery or thermal throttling: plug in, Best performance mode, raise the laptop for airflow |
+| Roof sticker not found / found everywhere | Re-tune the HSV range in `config.yaml` under the venue lighting; pick a colour nothing else has |
