@@ -73,3 +73,22 @@ def test_event_log_records_changes_once(tmp_path):
     assert abs(ev.time_in_state(1, 3.0) - 1.8) < 1e-9
     lines = ev.path.read_text().splitlines()
     assert len(lines) == 4 and '"state": "FRIENDLY"' in lines[1]
+
+
+def test_rf_only_view_draws_friendlies_without_video_and_uses_no_red():
+    homo = Homography(synthetic.TABLE_CM)
+    assert homo.calibrate(synthetic.render(0))
+    d = Display(load_config(), homo)
+    frame = synthetic.render(1.0)
+    out = {"labels": {}, "ghosts": [], "rf_denied": False, "lost_friendlies": []}
+    claims = {"F-1": {"rf_id": "F-1", "t": 0.9, "x": 60.0, "y": 40.0, "vx": 3.0, "vy": 0.0, "conflict": False},
+              "F-2": {"rf_id": "F-2", "t": -9.0, "x": 120.0, "y": 90.0, "vx": 0.0, "vy": 0.0, "conflict": False}}
+    for rung in ("L2", "L3", "L4"):
+        v = dict(view(out, []), rung=rung, last_claims=claims)
+        img = d.render(frame, v)
+        w = frame.shape[1]
+        # the video is gone: left half is the flat dark background plus overlay colours only
+        assert not np.array_equal(img[:, :w], frame)
+        px = img[:, :w].reshape(-1, 3)
+        red = (px[:, 2] > 180) & (px[:, 1] < 80) & (px[:, 0] < 80)
+        assert not red.any()

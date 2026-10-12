@@ -97,6 +97,32 @@ class Display:
             cv2.circle(vis, (int(px), int(py)), int(26 * s), MAGENTA, 3, cv2.LINE_AA)
             text(vis, f"GHOST {g['rf_id']}", (px + 30 * s, py + 6), 0.7 * s, MAGENTA)
 
+    def _rf_only(self, vis, view, s):
+        """Camera lost: replace the video with a schematic arena of authenticated friendlies only."""
+        h, w = vis.shape[:2]
+        vis[:] = (30, 30, 30)
+        aw, ah = self.homo.w, self.homo.h
+        k = min(w * 0.86 / aw, h * 0.72 / ah)
+        x0, y0 = int((w - aw * k) / 2), int(h * 0.2)
+
+        def P(x, y):
+            return int(x0 + x * k), int(y0 + y * k)
+
+        cv2.rectangle(vis, P(0, 0), P(aw, ah), GREY, 2)
+        text(vis, "RF-ONLY PICTURE: authenticated friendlies only", (x0, y0 - int(14 * s)), 0.8 * s, WHITE, 2, False)
+        text(vis, "Anything not transmitting is not shown. Absence of a marker does not mean safe.",
+             (x0, y0 + int(ah * k) + int(34 * s)), 0.6 * s, AMBER, 1, False)
+        for rf_id, c in view["last_claims"].items():
+            age = max(0.0, view["t"] - c["t"])
+            fresh = age < 1.0
+            colour = MAGENTA if c.get("conflict") else (GREEN if fresh else AMBER)
+            px, py = P(c["x"] + c["vx"] * min(age, 5), c["y"] + c["vy"] * min(age, 5))
+            ring = max(int((5 + 3 * age) * k), int(10 * s))  # no-fire ring grows while the beacon is silent
+            cv2.circle(vis, (px, py), ring, colour, 2 if not fresh else 1, cv2.LINE_AA)
+            cv2.circle(vis, (px, py), int(9 * s), colour, -1, cv2.LINE_AA)
+            tail = "live" if fresh else f"LOST FRIENDLY - last beacon {age:.0f}s ago"
+            text(vis, f"{rf_id}  {tail}", (px + int(14 * s), py - int(12 * s)), 0.7 * s, colour, 2)
+
     # ---------------------------------------------------------------- side panel
     def _map(self, panel, view, x0, y0, w, s):
         arena_w, arena_h = self.homo.w, self.homo.h
@@ -180,7 +206,10 @@ class Display:
         h, w = frame.shape[:2]
         s = h / 1080 * 1.4
         vis = frame.copy()
-        self._video(vis, view, s)
+        if view.get("rung", "L0") in ("L2", "L3", "L4"):
+            self._rf_only(vis, view, s)
+        else:
+            self._video(vis, view, s)
 
         banners = list(view["banners"])
         if view["out"]["rf_denied"]:

@@ -8,6 +8,7 @@ Keys: h calibrate (ArUco; falls back to clicking TL, TR, BR, BL: right-click und
       Red team: f forged · r replay · d cloned ID (toggle) · g ghost ID (toggle) · j jam (toggle)
 """
 import argparse
+import math
 import time
 
 import cv2
@@ -18,6 +19,7 @@ from turretx.camera import Camera
 from turretx.config import load_config, parse_source
 from turretx.display import AMBER, MAGENTA, WHITE, Display
 from turretx.events import EventLog
+from turretx.failsafe import Failsafe
 from turretx.homography import Homography
 from turretx.matcher import Matcher
 from turretx.rfrx import Interrogator, Receiver
@@ -96,6 +98,8 @@ def main():
     interrogator = Interrogator(cfg["rf"]["challenge_hz"])
     receiver = Receiver(wire.rf_key(cfg["rf"]["key"]), interrogator)
     matcher = Matcher(cfg)
+    failsafe = Failsafe()
+    last_claims = {}  # rf_id -> newest authenticated claim ever received (RF-only map, EVAL2_PLAN §1)
     events = EventLog(sound=not args.headless, write=not args.no_log)
     display = Display(cfg, homo)
     max_w = cfg.get("display", {}).get("max_width", 1600)
@@ -128,7 +132,7 @@ def main():
         cv2.namedWindow(WINDOW)
         cv2.setMouseCallback(WINDOW, on_mouse)
 
-    frame, t = None, 0.0
+    frame, t, rung = None, 0.0, "L0"
     frames, paused, moved, no_signal, rejected = 0, False, False, False, 0
     dt_avg, last = None, time.monotonic()
     tracks, fixes, recent_claims = [], [], []
@@ -140,6 +144,21 @@ def main():
                 if cam.is_file:
                     break  # end of the recording
                 no_signal = True  # live source dropped: keep the window up, camera reconnects
+                t_now = cam.now()  # RF keeps running without frames; the matcher ages custody and RF DENIED
+                if t_now is not None and t_now > t:
+                    ch = interrogator.poll(t_now)
+                    if ch:
+                        rf_sim.on_challenge(ch, t_now)
+                    claims, rejections = receiver.receive(rf_sim.poll(t_now), t_now)
+                    rejected += len(rejections)
+                    for c in claims:
+                        last_claims[c["rf_id"]] = c
+                    recent_claims = [c for c in recent_claims if t_now - c["t"] < 0.45] + claims
+                    out = matcher.update(t_now, [], claims)
+                    tracks = []
+                    events.update(t_now, out, rejections)
+                    t = t_now
+                rung = failsafe.update(time.monotonic(), None, not out["rf_denied"], bool(last_claims))
                 if frame is None:
                     frame = np.zeros((cfg["camera"]["height"], cfg["camera"]["width"], 3), np.uint8)
             else:
@@ -161,7 +180,9 @@ def main():
                     if d is not None:  # covered markers keep the previous verdict (R12)
                         moved = d > cfg["camera_moved_px"]
 
-                tracks = tracker.update(frame, t)
+                rf_moving = any(math.hypot(c["vx"], c["vy"]) > 3 for c in recent_claims)
+                rung = failsafe.update(now, frame, not out["rf_denied"], bool(last_claims), rf_moving, moved)
+                tracks = tracker.update(frame, t) if rung in ("L0", "L1") else []
                 fixes = tag_locator.update(frame, t)  # → RF simulator only, never the matcher
                 rf_sim.observe(t, fixes, tracks)
                 challenge = interrogator.poll(t)
@@ -169,6 +190,8 @@ def main():
                     rf_sim.on_challenge(challenge, t)
                 claims, rejections = receiver.receive(rf_sim.poll(t), t)
                 rejected += len(rejections)
+                for c in claims:
+                    last_claims[c["rf_id"]] = c
                 recent_claims = [c for c in recent_claims if t - c["t"] < 0.45] + claims
                 out = matcher.update(t, tracks, claims)
                 events.update(t, out, rejections)
@@ -190,6 +213,13 @@ def main():
                             f"({len(ui['clicks']) + 1}/4) - right-click undo, Esc cancel", AMBER))
         elif not homo.ready:
             banners.append(("NOT CALIBRATED - press h", AMBER))
+        if rung in ("L2", "L3", "L4"):
+            msg = {"L2": "CAMERA LOST: RF-ONLY. Vehicles that are not transmitting are NOT visible",
+                   "L3": "CAMERA + RF LOST: showing last-known positions only",
+                   "L4": "SAFE STATE: no camera, no RF. Nothing is known"}[rung]
+            banners.insert(0, (f"{msg} [{failsafe.reason}]" if failsafe.reason else msg, MAGENTA))
+        if failsafe.locked:
+            banners.append(("DESIGNATION LOCKED" + (" - press a to re-arm" if rung == "L0" else ""), AMBER))
         if no_signal:
             banners.append(("NO SIGNAL - reconnecting camera...", MAGENTA))
         if moved:
@@ -208,7 +238,7 @@ def main():
         view = {"t": t, "fps": 1.0 / dt_avg if dt_avg else 0.0, "latency_ms": cam.latency_ms(t),
                 "backend": cfg["detector"]["backend"], "tracks": tracks if homo.ready else [],
                 "out": out, "claims": recent_claims if homo.ready else [], "rejected": rejected,
-                "jammed": rf_sim.channel.jammed, "selected": ui["selected"], "banners": banners,
+                "jammed": rf_sim.channel.jammed, "rung": rung, "last_claims": last_claims, "selected": ui["selected"], "banners": banners,
                 "events": list(events.ticker), "time_in_state": lambda tid: events.time_in_state(tid, t)}
         ui["view"], ui["video_w"] = view, vis.shape[1]
         canvas = display.render(vis, view)
@@ -237,6 +267,14 @@ def main():
             msg = rf_sim.red_team(RED_TEAM_KEYS[key], t)
             events.add(t, "redteam", msg)
             notify(msg, 4.0, MAGENTA)
+        if key == ord("c"):
+            failsafe.kill(not failsafe.killed)
+            msg = "Camera KILLED (simulated failure)" if failsafe.killed else "Camera restored - press a to re-arm"
+            events.add(t, "failsafe", msg)
+            notify(msg, 4.0, MAGENTA)
+        if key == ord("a"):
+            notify("Designation re-armed" if failsafe.rearm() else "Cannot re-arm: camera is not healthy",
+                   3.0, WHITE if failsafe.designation_allowed else AMBER)
         if key == ord("p"):
             paused = not paused
         if key == ord("h"):
