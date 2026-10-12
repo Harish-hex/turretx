@@ -24,6 +24,8 @@ import numpy as np
 from turretx.kinematics import History
 
 MIN_BLOB_PX = 30
+ARENA_SLACK_CM = 5        # hsv tags are only searched inside the arena (+ this margin): green/blue
+                          # things around the arena (bags, tape, clothes) must not become the friendly
 DISC_DARK_V = 80          # disc pixels are darker than this (HSV value, 0-255)
 # Shape tests run in arena cm (perspective removed), on the convex hull (rim text notches gone).
 # The SIST2026 sticker has rim text top AND bottom, which at ~2 m eats the disc's top and bottom
@@ -49,10 +51,24 @@ class TagLocator:
         self.histories = {rf_id: History(velocity_window_s) for rf_id in self.cfg}
         self.last_px = {}
         self._kernel = np.ones((3, 3), np.uint8)
+        self._arena_key, self._arena = None, None
+
+    def _arena_mask(self, shape):
+        """Arena (+ slack) as a pixel mask, cached until the calibration or frame size changes."""
+        key = (self.homo.H.tobytes(), shape[:2])
+        if key != self._arena_key:
+            s = ARENA_SLACK_CM
+            poly = self.homo.to_px([(-s, -s), (self.homo.w + s, -s),
+                                    (self.homo.w + s, self.homo.h + s), (-s, self.homo.h + s)])
+            self._arena = np.zeros(shape[:2], np.uint8)
+            cv2.fillPoly(self._arena, [poly.astype(np.int32)], 255)
+            self._arena_key = key
+        return self._arena
 
     # ------------------------------------------------------------------ detectors
     def _find_hsv(self, hsv, c):
         mask = cv2.inRange(hsv, np.array(c["hsv_lo"], np.uint8), np.array(c["hsv_hi"], np.uint8))
+        mask = cv2.bitwise_and(mask, self._arena_mask(hsv.shape))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._kernel)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         blob = max(contours, key=cv2.contourArea, default=None)

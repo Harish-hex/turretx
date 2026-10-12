@@ -178,6 +178,50 @@ def test_merged_blob_is_flagged(homo):
     assert seen_merged
 
 
+class _BoxBackend:
+    """Fake detector: returns the next frame's [(track_id, box, conf)] list."""
+
+    def __init__(self, frames):
+        self.frames = list(frames)
+
+    def update(self, frame):
+        return self.frames.pop(0)
+
+
+def _px_box(homo, x_cm, y_cm, w_px, h_px):
+    cx, cy = homo.to_px([(x_cm, y_cm)])[0]
+    return (cx - w_px / 2, cy - h_px / 2, cx + w_px / 2, cy + h_px / 2)
+
+
+def test_mixed_vehicle_sizes_are_not_flagged_merged(homo):
+    """A big vehicle next to a small one is not 'two cars in one blob' (live arena finding)."""
+    small, big = _px_box(homo, 30, 30, 40, 20), _px_box(homo, 70, 30, 110, 60)  # 8x the area
+    tr = Tracker(diff_cfg(), homo)
+    tr.backend = _BoxBackend([[(1, small, 1.0), (2, big, 1.0)]] * 60)
+    for i in range(60):
+        assert not any(k["merged"] for k in tr.update(None, i / 30))
+
+
+def test_sudden_growth_is_merged_until_it_shrinks_back(homo):
+    one, two = _px_box(homo, 50, 30, 40, 20), _px_box(homo, 52, 30, 84, 22)  # area x2.3 in one frame
+    frames = [[(1, one, 1.0)]] * 30 + [[(1, two, 1.0)]] * 20 + [[(1, one, 1.0)]] * 10
+    tr = Tracker(diff_cfg(), homo)
+    tr.backend = _BoxBackend(frames)
+    flags = [tr.update(None, i / 30)[0]["merged"] for i in range(60)]
+    assert not any(flags[:30]) and all(flags[30:50]) and not any(flags[51:])
+
+
+def test_hsv_tag_outside_the_arena_is_ignored(homo):
+    cfg = {"F-1": {"mode": "hsv", "hsv_lo": [35, 80, 60], "hsv_hi": [85, 255, 255]}}
+    frame = synthetic.render(0, cars=False)
+    cv2.rectangle(frame, (5, 5), (45, 45), (40, 200, 40), -1)  # green patch off the arena (top-left corner)
+    assert not TagLocator(cfg, homo).update(frame, 0.0)[0]["visible"]
+    x, y = synthetic.cm_to_out_px([(50, 30)])[0].astype(int)
+    cv2.rectangle(frame, (x - 12, y - 12), (x + 12, y + 12), (40, 200, 40), -1)  # smaller, but inside
+    fix = TagLocator(cfg, homo).update(frame, 0.0)[0]
+    assert fix["visible"] and abs(fix["x"] - 50) < 2 and abs(fix["y"] - 30) < 2
+
+
 def test_disc_not_fooled_by_aruco_markers_or_empty_arena(homo):
     loc = TagLocator(synthetic.tags_cfg(), homo)
     assert not loc.update(synthetic.render(0, cars=False), 0.0)[0]["visible"]

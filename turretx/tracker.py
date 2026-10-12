@@ -21,7 +21,9 @@ BYTETRACK_YAML = str(Path(__file__).with_name("bytetrack.yaml"))
 TABLE_SLACK_CM = 5      # keep vehicles slightly outside the marker-centre rectangle
 PRUNE_AFTER_S = 2.0     # forget a track's history after this long unseen
 AREA_JUMP = 1.5         # box area changing by more than this factor in one frame = merge/split
-MERGED_AREA = 1.7       # a box this much bigger than the typical vehicle = two cars in one blob
+MERGED_AREA = 1.7       # a box suddenly this much bigger than its OWN recent size = two cars in one blob
+BASELINE_FRAMES = 15    # a track's recent unmerged box areas (~0.5 s): slow turning is absorbed, a merge isn't
+MERGED_RESET_S = 3.0    # "merged" this long = the vehicle itself changed (turned, came closer): re-learn its size
 
 
 def pick_device():
@@ -234,7 +236,10 @@ class Tracker:
         self.velocity_window_s = cfg["tracker"].get("velocity_window_s", 0.5)
         self.histories = {}
         self.areas = {}
-        self.typical_area = deque(maxlen=900)  # recent box areas; the median ≈ one vehicle
+        # Per-track size baseline, not one "typical vehicle" for all: a big vehicle next to a small
+        # one is not a merged blob (live-arena finding: mixed sizes were flagged TOO CLOSE).
+        self.baselines = {}     # track id → deque of its recent unmerged box areas
+        self.merged_since = {}  # track id → t when its "merged" flag started
 
     def update(self, frame, t):
         """Track dicts (contract §6) for vehicles inside the table area."""
@@ -245,9 +250,6 @@ class Tracker:
             self._prune(t)
             return []
         gp = [((b[0] + b[2]) / 2, b[1] + self.ground_frac * (b[3] - b[1])) for _, b, _ in dets]
-        areas_now = [max((b[2] - b[0]) * (b[3] - b[1]), 1.0) for _, b, _ in dets]
-        self.typical_area.extend(areas_now)
-        typical = float(np.median(self.typical_area)) if len(self.typical_area) >= 30 else None
         cm = self.homo.to_cm(gp)
         tracks = []
         for (tid, box, conf), (x, y) in zip(dets, cm):
@@ -255,7 +257,7 @@ class Tracker:
                 continue
             hist = self.histories.setdefault(tid, History(self.velocity_window_s))
             area = max((box[2] - box[0]) * (box[3] - box[1]), 1.0)
-            merged = typical is not None and area > MERGED_AREA * typical
+            merged = self._merged(tid, area, t)
             prev_area = self.areas.get(tid)
             if prev_area and not 1 / AREA_JUMP <= area / prev_area <= AREA_JUMP:
                 hist.reset()  # two cars merged into one blob, or one split off: not one motion
@@ -270,7 +272,25 @@ class Tracker:
         self._prune(t)
         return tracks
 
+    def _merged(self, tid, area, t):
+        """True if this track's box suddenly grew well past its own recent size (two cars in one
+        blob). A new track has no baseline yet, so it is never flagged."""
+        base = self.baselines.setdefault(tid, deque(maxlen=BASELINE_FRAMES))
+        merged = len(base) >= 5 and area > MERGED_AREA * float(np.median(base))
+        if merged:
+            if t - self.merged_since.setdefault(tid, t) > MERGED_RESET_S:
+                base.clear()
+                del self.merged_since[tid]
+                merged = False
+        else:
+            self.merged_since.pop(tid, None)
+        if not merged:
+            base.append(area)  # merged areas never become the baseline
+        return merged
+
     def _prune(self, t):
         for tid in [k for k, h in self.histories.items() if h.last_t is None or t - h.last_t > PRUNE_AFTER_S]:
             del self.histories[tid]
             self.areas.pop(tid, None)
+            self.baselines.pop(tid, None)
+            self.merged_since.pop(tid, None)
