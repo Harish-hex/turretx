@@ -14,6 +14,14 @@ logs/
 
 # The pitch deck PDF is 34 MB; its content is summarised in TURRETX_DESIGN.md
 *.pdf
+!markers/markers.pdf
 
 .DS_Store
 Thumbs.db
+
+# Per-setup calibration files
+homography.json
+turret_calib.json
+
+# CLIP text-encoder weights downloaded for YOLO-World
+weights/

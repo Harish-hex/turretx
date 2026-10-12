@@ -6,3 +6,4 @@ numpy>=1.26
 scipy>=1.11             # Hungarian assignment (linear_sum_assignment)
 lap>=0.5.12             # ByteTrack dependency (pre-installed so Ultralytics doesn't auto-install mid-demo)
 pyyaml>=6.0             # config.yaml
+pytest>=8.0              # tests

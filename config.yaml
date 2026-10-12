@@ -1,0 +1,57 @@
+# TurretX configuration. Units: cm, cm/s, seconds unless stated. See TURRETX_DESIGN.md §6.
+camera:
+  source: 1                 # webcam index (phone via Iriun is usually 1), video path, or URL
+  width: 1280
+  height: 720
+# Distance between the CENTRES of the corner markers (TL→TR, TL→BL). Measure the real setup!
+table_cm: [100, 60]
+scale_m_per_cm: 10          # scenario scale (R9): 1 cm on the table = 10 m
+aruco: {dict: DICT_4X4_50, ids: [0, 1, 2, 3]}   # TL, TR, BR, BL
+camera_moved_px: 8
+homography_file: homography.json
+
+detector:
+  backend: yolo             # yolo | yoloworld | diff
+  weights: yolov8n.pt
+  conf: 0.2
+  imgsz: 640
+  exclude_classes: [person]
+  classes_text: ["toy car"] # yoloworld only
+  diff: {min_area: 400, max_area: 20000}
+tracker: {track_buffer: 60}
+
+tags:                       # simulator-only GPS stand-in (R1); tune HSV at the venue
+  F-1: {hsv_lo: [140, 120, 120], hsv_hi: [170, 255, 255]}
+
+turret:
+  port: null                # e.g. COM5 (Device Manager → Ports); null = TURRET OFFLINE
+  baud: 115200
+  zone_margin_cm: 3
+  interlock_recent_s: 5
+  interlock_radius_cm: 10
+  lead_ms: 150
+  max_cmd_hz: 20
+  min_move_deg: 0.5
+  heartbeat_ms: 200
+
+rf:
+  key: "DEMO-KEY-turretx"   # demo only (R19)
+  challenge_hz: 5
+  latency_ms: 100
+  pos_noise_cm: 3
+  rssi: {p0: -40, n: 2.2, noise_db: 3, drone_alt_m: 300}
+
+matcher:
+  sigma_pos_cm: 8
+  gate_cm: 25
+  sigma_speed: 5
+  heading_min_speed: 5
+  sigma_rssi_db: 6
+  weights: {P: 0.45, M: 0.45, R: 0.10}
+  ema_alpha: 0.3
+  friendly_threshold: 0.70
+  mismatch_threshold: 0.30
+  ambiguity_margin: 0.10
+  enter_s: 1.0
+  exit_s: 1.5
+  coast_decay_per_s: 0.1

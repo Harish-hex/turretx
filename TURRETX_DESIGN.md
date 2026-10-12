@@ -100,8 +100,8 @@ Single Python process. Modules exchange **plain dicts** (contracts in §6), so e
 turretx/
   __init__.py
   config.py      # loads config.yaml
-  clock.py       # single time source: video PTS in file mode, time.monotonic() live (R3)
-  camera.py      # source opening (CAP_DSHOW on Windows, R20), grabber thread (R13)
+  camera.py      # source opening (CAP_DSHOW on Windows, R20), grabber thread (R13), frame timestamps = THE clock (R3)
+  synthetic.py   # fake overhead scene with exact ground truth, for tests
   homography.py  # ArUco calibration, manual 4-click fallback, pixel→cm, drift check (R12)
   tracker.py
   taglocator.py  # simulator-only sticker detector (R1)
@@ -124,7 +124,7 @@ tests/           # matcher unit + metamorphic tests on synthetic tracks
 ## 5. Component details
 
 ### 5.0 Clock & camera (R3, R13, R20)
-- **One clock** for everything: `clock.now()` returns the **video timestamp** (`CAP_PROP_POS_MSEC`) in file mode and `time.monotonic()` in live mode. Every Track, Claim and RF timer uses it. In file mode the RF simulator is **driven per frame** (it emits whatever is due by the current video time), never by wall-clock threads, so playback speed on the Mac doesn't matter.
+- **One clock** for everything: **each frame's timestamp `t`** from `Camera.read()`. That's the **video timestamp** (`CAP_PROP_POS_MSEC`) in file mode and `time.monotonic()` at grab time in live mode. Every Track, Claim and RF timer uses the current frame's `t`. The RF simulator and turret are **driven per frame by the main loop** (they handle whatever is due by the current `t`), never by their own wall-clock threads, so playback speed on the Mac doesn't matter. *(Implemented without a separate `clock.py`: the frame timestamp is the clock.)*
 - **Live mode:** a grabber thread reads continuously and keeps only the latest frame (OpenCV otherwise buffers and latency builds up).
 - **Windows:** always open cameras with `cv2.CAP_DSHOW` so indices match `check_env.py`.
 
@@ -150,6 +150,7 @@ tests/           # matcher unit + metamorphic tests on synthetic tracks
 - Note: the sticker sits above the ground plane, so its projected position has a small parallax offset (a few cm). Treat it like GPS error.
 - If a sticker isn't visible (e.g. a stick blocks it), the beacon keeps dead-reckoning at constant velocity for up to 1 s, then stops replying (comms-loss → coasting).
 - **Pitch line:** "Each friendly reports its own position from its own navigation. Here, a sticker read by a *separate* sensor stands in for the vehicle's GPS. Stretch goal #5 replaces it with real on-board odometry."
+- **Perception risk:** a judge seeing a sticker may assume it identifies friendlies. **Say the pitch line before they can wonder, then immediately prove it:** press `j` (jam) and the stickered car fades to UNKNOWN *with the sticker still visible*; then `d` (cloned ID) flags a car *without* a sticker as ID CONFLICT. Only the RC car wears a sticker. Put it on **before recording dev clips** so the tag locator can be built offline.
 
 ### 5.4 RF simulator (`rfsim.py`)
 - **Challenge-response (#1):** the drone issues a challenge **at 5 Hz**: `{nonce, t}` with a fresh random nonce. Each friendly sends **exactly one reply per nonce** (R4).
@@ -255,7 +256,7 @@ The heartbeat matters: if the laptop app crashes or the cable is pulled, the las
 
 ```python
 # tracker → matcher (one per vehicle, every frame)
-Track = {"track_id": int, "t": float, "x": float, "y": float,      # cm, table frame; t from clock.now()
+Track = {"track_id": int, "t": float, "x": float, "y": float,      # cm, table frame; t = frame timestamp
          "vx": float, "vy": float, "speed": float, "heading": float, # cm/s, radians
          "bbox": [x1, y1, x2, y2], "det_conf": float}
 
@@ -339,7 +340,7 @@ matcher:
 | Hours | Harish (software) | Teammates (parallel) |
 |---|---|---|
 | 0–1 | Run setup on the 3050, camera feed via Iriun | Build the scene (table, markers, mount ≥60°, lighting, RC car + toy cars + sticks, roof sticker). **Record test clips.** Electronics: **start the laser turret** (servos, laser via transistor, firmware per §5.9 protocol, mechanical limits, heartbeat timeout) |
-| 1–3 | clock + camera + homography + detector/tracker. **Hour 2 checkpoint: pick the best backend** | Fix deck typos; re-pitch the deck as air-to-ground |
+| 1–3 | camera + homography + detector/tracker. **Hour 2 checkpoint: pick the best backend** | Fix deck typos; re-pitch the deck as air-to-ground |
 | 1–4 | — | **Label about 250 frames in Roboflow** (DEPENDENCIES.md §6) |
 | 3–4 | Kinematics, Track contract, taglocator | Write the 5-minute demo script |
 | 4–6 | rfsim + rfrx (challenge-response, raw-bytes HMAC, conflicts) | Prepare Q&A answers (§9) |
@@ -359,6 +360,7 @@ matcher:
 ---
 
 ## 8. Demo scenarios (5 min)
+0. **Sticker disclaimer first** (§5.3): say the sticker is the GPS stand-in, then show jamming (`j`) early so judges see the stickered car drop to UNKNOWN.
 1. **Baseline:** RC car = Friendly-1 (stickered) → green ✓; the two toy cars amber `NO ID` ("we don't assume hostile"). Laser stays IDLE.
 2. **Crossing:** Friendly-1 crosses an unknown car → `TOO CLOSE` → re-resolves to the correct physical car afterwards (possible because the RF truth comes from the sticker, not the tracker, R1). Use a YOLO backend.
 3. **Forged / replay** (`f`, `r`) → banner + rejected in the event log; labels unchanged.
@@ -392,7 +394,7 @@ matcher:
 | Hands/sticks detected as vehicles (R7) | RC cars or thin sticks/thread; exclude `person`; diff blob filters |
 | Motion blur | Light, locked exposure, 60 FPS |
 | Lighting changes break `diff` / sticker HSV | Lock exposure; re-capture background with `b`; tune HSV at the venue |
-| Timing mismatch between camera and RF (R2/R3) | Single clock; claim propagation |
+| Timing mismatch between camera and RF (R2/R3) | Frame timestamp as the single clock; claim propagation |
 | Camera bumped (R12) | Drift check + banner; recalibrate with `h` |
 | Threshold tuning takes long | Synthetic + metamorphic tests first; tune from logged JSONL |
 | CUDA/driver setup on the 3050 | Run setup early; `check_env.py`; CPU fallback still works at low FPS |
@@ -443,7 +445,7 @@ matcher:
 |---|---|---|---|
 | R1 | Skeptic | RF sim truth = tracker output → circular; ID swaps invisible | Accepted → sticker tag locator (§5.3, D15) |
 | R2 | Skeptic | Claim/track timestamps differ (~9 cm error at speed) | Accepted → claim propagation (§5.6) |
-| R3 | Skeptic | Wall clock wrong on recorded video | Accepted → `clock.py` (§5.0) |
+| R3 | Skeptic | Wall clock wrong on recorded video | Accepted → frame timestamp as the clock (§5.0) |
 | R4 | Skeptic | 1 Hz nonce vs 5 Hz replies rejects genuine messages | Accepted → 5 Hz challenge (§5.4) |
 | R5 | Skeptic | Clone replies overwrite each other | Accepted → one reply per (nonce, rf_id) (§5.5) |
 | R6 | Skeptic | Clone attack paints the real friendly red | Accepted → magenta VERIFY (§5.6) |
