@@ -11,6 +11,7 @@ import math
 import random
 
 from turretx import wire
+from turretx.rfmodel import expected_rssi
 
 DEAD_RECKON_S = 1.0
 CLONE_KEEP_OFF_CM = 12   # the cloned emitter never "becomes" the real friendly
@@ -18,13 +19,9 @@ CLONE_FOLLOW_CM = 15     # max jump per frame when following the attacker's vehi
 
 
 def rssi_at(x_cm, y_cm, arena_cm, cfg_rf, rng):
-    """Log-distance path loss from a virtual drone above the arena centre, in scenario metres (R9)."""
-    r = cfg_rf["rssi"]
-    scale = cfg_rf["scale_m_per_cm"]
-    dx = (x_cm - arena_cm[0] / 2) * scale
-    dy = (y_cm - arena_cm[1] / 2) * scale
-    d = math.sqrt(dx * dx + dy * dy + r["drone_alt_m"] ** 2)
-    return r["p0"] - 10 * r["n"] * math.log10(d) + rng.gauss(0, r["noise_db"])
+    """Received strength at the drone: the shared path-loss model plus noise (R9)."""
+    return (expected_rssi(x_cm, y_cm, arena_cm, cfg_rf["scale_m_per_cm"], cfg_rf["rssi"])
+            + rng.gauss(0, cfg_rf["rssi"]["noise_db"]))
 
 
 class Channel:

@@ -152,3 +152,27 @@ def test_tag_offset_is_subtracted(homo):
     shifted = TagLocator(cfg, homo).update(synthetic.render(1.0), 1.0)[0]
     assert shifted["x"] == pytest.approx(plain["x"] - 1.5)
     assert shifted["y"] == pytest.approx(plain["y"] + 4.0)
+
+
+def test_history_resets_on_implausible_jump():
+    h = History()
+    for i in range(16):
+        h.add(i / 30, 10 + 0.5 * i, 20.0)
+    assert h.settled
+    h.add(16 / 30, 40.0, 20.0)  # 22 cm in one frame ≈ 660 cm/s: merge/split or ID swap
+    assert not h.settled and h.velocity() == (0.0, 0.0)
+
+
+def test_merged_blob_is_flagged(homo):
+    tr = Tracker(diff_cfg(), homo)
+    bg = synthetic.render(0, cars=False)
+    tr.backend.set_background(bg)
+    seen_merged = False
+    for i in range(300):  # F-1 and U-3 touch around t ≈ 2.8–3.5 s
+        t = i / synthetic.FPS
+        for k in tr.update(synthetic.render(t), t):
+            if 2.9 < t < 3.4 and k["merged"]:
+                seen_merged = True
+            if t < 2.0:
+                assert not k["merged"]
+    assert seen_merged

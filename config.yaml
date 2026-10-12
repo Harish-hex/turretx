@@ -54,10 +54,15 @@ matcher:
   heading_min_speed: 5
   sigma_rssi_db: 6
   weights: {P: 0.45, M: 0.45, R: 0.10}
-  ema_alpha: 0.3
+  ema_tau_s: 0.5            # time-based smoothing of confidence (frame-rate independent)
   friendly_threshold: 0.70
   mismatch_threshold: 0.30
   ambiguity_margin: 0.10
+  ambiguity_floor: 0.40      # a runner-up below this can't make a match ambiguous
   enter_s: 1.0
   exit_s: 1.5
-  coast_decay_per_s: 0.1
+  claim_max_age_s: 0.6       # claims older than this are no longer "active"
+  ghost_grace_s: 1.0         # a claim with no vehicle must persist this long to be a GHOST
+  coast_max_s: 60            # track custody: max time a silent friendly keeps its identity
+  custody_radius_cm: 15      # another vehicle this close breaks custody
+  rf_denied_s: 2.0           # no valid claims for this long → RF DENIED

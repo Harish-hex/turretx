@@ -6,6 +6,7 @@ Backends (config detector.backend):
   diff       difference from an empty-table reference frame + a small centroid tracker
 Identity is NOT decided here; this module only finds and follows vehicles.
 """
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -17,6 +18,8 @@ from turretx.kinematics import History, motion
 BYTETRACK_YAML = str(Path(__file__).with_name("bytetrack.yaml"))
 TABLE_SLACK_CM = 5      # keep vehicles slightly outside the marker-centre rectangle
 PRUNE_AFTER_S = 2.0     # forget a track's history after this long unseen
+AREA_JUMP = 1.5         # box area changing by more than this factor in one frame = merge/split
+MERGED_AREA = 1.7       # a box this much bigger than the typical vehicle = two cars in one blob
 
 
 def pick_device():
@@ -162,6 +165,8 @@ class Tracker:
             raise ValueError(f"unknown detector backend {backend!r}")
         self.velocity_window_s = cfg["tracker"].get("velocity_window_s", 0.5)
         self.histories = {}
+        self.areas = {}
+        self.typical_area = deque(maxlen=900)  # recent box areas; the median ≈ one vehicle
 
     def update(self, frame, t):
         """Track dicts (contract §6) for vehicles inside the table area."""
@@ -172,21 +177,32 @@ class Tracker:
             self._prune(t)
             return []
         gp = [((b[0] + b[2]) / 2, b[1] + self.ground_frac * (b[3] - b[1])) for _, b, _ in dets]
+        areas_now = [max((b[2] - b[0]) * (b[3] - b[1]), 1.0) for _, b, _ in dets]
+        self.typical_area.extend(areas_now)
+        typical = float(np.median(self.typical_area)) if len(self.typical_area) >= 30 else None
         cm = self.homo.to_cm(gp)
         tracks = []
         for (tid, box, conf), (x, y) in zip(dets, cm):
             if not self.homo.inside(x, y, margin=-TABLE_SLACK_CM):
                 continue
             hist = self.histories.setdefault(tid, History(self.velocity_window_s))
+            area = max((box[2] - box[0]) * (box[3] - box[1]), 1.0)
+            merged = typical is not None and area > MERGED_AREA * typical
+            prev_area = self.areas.get(tid)
+            if prev_area and not 1 / AREA_JUMP <= area / prev_area <= AREA_JUMP:
+                hist.reset()  # two cars merged into one blob, or one split off: not one motion
+            self.areas[tid] = area
             hist.add(t, float(x), float(y))
             vx, vy = hist.velocity()
             speed, heading = motion(vx, vy)
             tracks.append({"track_id": int(tid), "t": t, "x": float(x), "y": float(y),
                            "vx": vx, "vy": vy, "speed": speed, "heading": heading,
+                           "settled": hist.settled, "merged": merged,
                            "bbox": [float(v) for v in box], "det_conf": conf})
         self._prune(t)
         return tracks
 
     def _prune(self, t):
-        for tid in [k for k, h in self.histories.items() if t - h.last_t > PRUNE_AFTER_S]:
+        for tid in [k for k, h in self.histories.items() if h.last_t is None or t - h.last_t > PRUNE_AFTER_S]:
             del self.histories[tid]
+            self.areas.pop(tid, None)

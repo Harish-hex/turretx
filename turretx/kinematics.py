@@ -10,6 +10,7 @@ import numpy as np
 
 STATIONARY_CM_S = 2.0
 DEFAULT_WINDOW_S = 0.5
+MAX_SPEED_CM_S = 250.0  # faster than any RC car here: a bigger jump is a merge/split/ID swap
 
 
 class History:
@@ -18,9 +19,24 @@ class History:
         self.samples = deque()  # (t, x, y)
 
     def add(self, t, x, y):
+        """Add a sample. An implausible jump means the track is not the same physical motion
+        (blobs merging/splitting, tracker ID swap): drop the history instead of fitting a line
+        through the jump, which would fake a huge velocity (found in the Phase 3 end-to-end run)."""
+        if self.samples:
+            pt, px, py = self.samples[-1]
+            if t > pt and math.hypot(x - px, y - py) / (t - pt) > MAX_SPEED_CM_S:
+                self.reset()
         self.samples.append((t, x, y))
         while self.samples and t - self.samples[0][0] > self.window_s:
             self.samples.popleft()
+
+    def reset(self):
+        self.samples.clear()
+
+    @property
+    def settled(self):
+        """True once the history spans most of the window: the velocity can be trusted."""
+        return len(self.samples) >= 3 and self.samples[-1][0] - self.samples[0][0] >= 0.8 * self.window_s
 
     @property
     def last_t(self):

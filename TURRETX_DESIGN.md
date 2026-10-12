@@ -194,7 +194,7 @@ For every (claim *c*, track *k*) pair:
 | State | Condition | Display (R6, R21, R23) |
 |---|---|---|
 | **FRIENDLY** | assigned claim with C ≥ **0.70** held ≥ 1.0 s | green · ✓ · `F-1 0.86` |
-| FRIENDLY · COASTING | was FRIENDLY, claims stopped; C decays 0.1/s | green dashed · ✓ · `COASTING` |
+| FRIENDLY · COASTING | was FRIENDLY, its rf_id went **silent** (not contradicted). Held while **track custody** is intact (§5.6a), up to 60 s | green dashed · ✓ · `F-1 · NO RF 23 s` |
 | **UNKNOWN · NO ID** | no claim assigned | amber · ? |
 | **UNKNOWN · TOO CLOSE** | ambiguity rule above | amber · ? · `TOO CLOSE` |
 | **SUSPICIOUS · MOTION MISMATCH** | assigned claim with M < 0.3 held ≥ 1.0 s (only when the heading term is active or Δs is large) | **magenta** · ⚠ · `VERIFY` |
@@ -202,7 +202,16 @@ For every (claim *c*, track *k*) pair:
 | (claim only) **GHOST** | verified claim with no track within the gate | magenta hollow ring on the mini-map · `GHOST ID` |
 
   - Leaving a state requires 1.5 s of contrary evidence, so labels don't flicker.
-  - Coasting below C = 0.5 → UNKNOWN · NO ID. **Silence alone never produces SUSPICIOUS.**
+  - Custody broken or 60 s elapsed → UNKNOWN · NO ID. **Silence alone never produces SUSPICIOUS.**
+  - **ID CONFLICT enters immediately** (no 1 s wait): it is a security alert and the turret interlock must apply at once. Leaving it still needs 1.5 s.
+  - Smoothing is **time-based** (`ema_tau_s`), so results don't depend on frame rate.
+
+### 5.6a Track custody & RF DENIED (from the jamming discussion)
+- **Identity belongs to the camera track; the radio refreshes it.** When a FRIENDLY's rf_id goes silent, the track keeps FRIENDLY · COASTING for as long as the drone keeps continuous custody, up to `coast_max_s` (60 s).
+- **Custody breaks, and the label drops to UNKNOWN · NO ID immediately, when:** the track is lost (a re-found vehicle gets a new track ID), or any other vehicle comes within `custody_radius_cm` (15 cm), since they could swap in a crossing.
+- **RF DENIED:** if friendly claims were being received and **no** valid claims arrive for `rf_denied_s` (2 s), the matcher raises `rf_denied`. The display shows **"RF DENIED: identification degraded. Unidentified ≠ hostile."** and the turret cues nothing (no fresh claims means no MOTION MISMATCH cues; coasting friendlies stay interlocked).
+- **Last-known friendlies:** when a FRIENDLY/COASTING track is lost, its last position and velocity are kept for 60 s and drawn as a fading marker with a growing uncertainty circle.
+- **Pitch line:** "Under total jamming we can't identify anyone, and we say so. Identity we've already confirmed stays with each vehicle's track while the drone keeps continuous custody."
   - **Red is not used for any label.** Nothing on screen should read as "enemy".
 
 ### 5.7 Display (`display.py`)
@@ -216,7 +225,31 @@ For every (claim *c*, track *k*) pair:
 ### 5.8 Hotkeys
 `h` calibrate homography · `b` capture empty-table background · Tab / click: select vehicle · `m` **mark** the cued/selected vehicle (laser blinks) · `x` cancel mark / laser off · `t` turret calibration · `f` forged · `r` replay · `d` cloned ID · `g` ghost · `j` jam toggle · `p` pause · `q` quit
 
-### 5.9 Laser "verification marker" turret (`turret.py` + ESP32)
+### 5.10 Real ESP32 beacon: MPU6050-only motion signature (stretch #5, decided 2026-10-12)
+The RC car carries an ESP32-S3 + MPU6050 and **no wheel encoder**. Integrated speed/distance/position from an accelerometer drift within seconds (a parked car would soon "report" motion, the exact false-MISMATCH trap fixed in Phase 3), so the real beacon does **not** send position. It sends a **motion signature**, and the matcher asks *"is exactly one tracked vehicle moving the way this radio says it is?"*
+
+**Firmware (electronics team):**
+- Sample the MPU6050 at **100 Hz**; low-pass filter.
+- **Gyro bias:** average gyro Z for 3 s at power-on while still (set `cal=1` when done); re-estimate whenever stationary.
+- **Stationary detector (ZUPT):** |gyro Z| < 2 °/s and accelerometer variance small over 0.3 s → `mv=0`, else `mv=1`.
+- On each challenge (5 Hz), reply with the **last 0.2 s as 4 samples at 20 Hz**:
+  - `wz`: yaw rate (gyro Z, bias-removed), units 0.1 °/s, oldest first
+  - `ax`: forward acceleration (accelerometer along the car's nose, gravity/bias removed), units mm/s²
+- **Do not send** roll/pitch/yaw angle, integrated speed or distance: they drift and would cause false alarms. (Fine to keep for local debugging.)
+- Payload: compact JSON, integers only, ≤ 256 bytes, signed with **HMAC-SHA256** over the exact bytes (mbedtls `mbedtls_md_hmac`, same shared key):
+  `{"id":"F-1","n":"<nonce>","seq":123,"cal":1,"mv":1,"wz":[152,160,171,169],"ax":[-40,10,25,30]}`
+- Transport: **UDP over WiFi** on the same hotspot as the 3050: the laptop broadcasts `{"n":"<nonce>"}` challenges on one port; the car replies to another. (ESP-NOW to a USB-attached ESP32 is the alternative.)
+- `seq` increments per reply (loss detection). The ESP32 clock is **not** used for timing: the laptop timestamps samples from the challenge send time.
+
+**Software (Harish):**
+- `wire.py`: second payload schema (`wz`, `ax`, `mv`, `cal`, `seq`) with the same verification order.
+- Camera side: per track, **yaw rate** = d(heading)/dt (only while speed > 5 cm/s) and forward acceleration = d(speed)/dt, from the same velocity history.
+- Matcher: new **signature score S** over a 2.5 s window: correlation of beacon yaw rate with each track's yaw rate, plus agreement of moving/stationary (`mv`) and start/stop events. S replaces P (no position) for these claims; it is weak while everything is parked (both "stationary" = low info, like today).
+- `cal=0` → motion fields ignored (no information), never SUSPICIOUS.
+- **Why it's good for the pitch:** no position needed, nothing to drift, harder to spoof (the attacker must mimic the friendly's live motion), and it works on a real drone even when friendly GPS is degraded.
+- Estimated cost: ~2–3 h of software once the firmware sends packets.
+
+ (`turret.py` + ESP32)
 **Principle: the model cues, the interlock protects friendlies, the human marks.** The laser never blinks (marks) without an operator keypress, so the system takes no autonomous action.
 
 **Designation zone.** A polygon in table cm (default: the calibrated table area minus a 3 cm margin; configurable). The turret only ever points at coordinates **inside the zone**. Anything outside is refused in software, and the firmware also clamps the servos to mechanical limits so the laser physically cannot leave the table area (eye safety).
@@ -441,6 +474,11 @@ matcher:
 | 22 | **Designation zone + friendly interlock + auto-cue (MOTION MISMATCH only) + operator-confirmed mark** | Fully operator-driven; automatic blinking; zone-only | The automatic cue keeps the drama, the interlock prevents painting a friendly (clone case), the human mark keeps "no autonomous action" |
 | 23 | Vehicle cast: RC car = Friendly-1, toy cars on sticks = unknowns | All toy cars | Only one remote-controlled car; the friendly needs the cleanest motion for the motion check |
 | 24 | Laser safety: Class 2, servo limits, 500 ms heartbeat cut-off, off at power-up | Software-only checks | A crash or bug must never leave a laser on or pointing off the table |
+| 25 | **Track custody** (coast up to 60 s while custody holds) + **RF DENIED** mode + last-known friendly markers | 2–3 s decay only; custody only | Jamming is the obvious judge question; confirmed identity shouldn't vanish while the drone still watches the vehicle, but must drop the instant custody is doubtful |
+| 26 | Floor arena, rigid overhead mount (see 10b) | — | — |
+| 27 | Matcher smoothing is time-based (τ), not per-frame α; ID CONFLICT enters immediately | Per-frame EMA α=0.3; 1 s entry for all states | Frame-rate independence (metamorphic test); security alerts and the interlock must not wait |
+| 28 | Velocity history resets on implausible jumps / box-area jumps; `settled` and `merged` flags; unsettled → no mismatch; merged blob → TOO CLOSE | Fit through jumps | End-to-end run showed the real friendly flagged MOTION MISMATCH after every crossing |
+| 29 | **Real beacon = MPU6050 motion signature (yaw rate + start/stop), no position** (§5.10) | Integrated speed/position; add wheel encoder | No encoder on the car; integrated IMU drifts within seconds; signature matching needs no position and is harder to spoof |
 
 ---
 
