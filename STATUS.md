@@ -17,13 +17,13 @@ Machines: code is written on a Mac (M1, `.venv`, MPS); the demo runs on a Window
 | Camera-loss failsafe (`failsafe.py`, RF-only map, designation lock) | done, **not yet seen on the real window** | 2399091 |
 | Relay protocol (`relay.py`) | done, 21 tests | a3203cb |
 | Relay wired into the app (`commshub.py`, hotkeys, shared jam/hop) | done, glue in `main.py` untested except a headless smoke | 08b5b90 |
-| **Comms panel in `display.py`** (RELAY_INTEGRATION §7) | **next (step 3)** | — |
-| `SerialLink` to ESP32 bridges | optional, only if firmware is ready | — |
+| Comms panel in `display.py` (channel, jam/barrier banners, queue, last messages with route + receipt) | done; looked at as a rendered image, not yet in the live window | next commit |
+| `SerialLink` to ESP32 bridges | **next, optional**, only if firmware is ready | — |
 | Real-camera detection tuning on the 3050 | open; model struggles at distance (ideas: crop to arena before YOLO, diff backend as primary, higher imgsz, fine-tune) | — |
 | `turret.py` (laser, zone, interlock, serial) | not built; spec in design §5.9 | — |
 | MPU6050 motion-signature matching | not built; spec in design §5.10 | — |
 
-Tests: `139 passed` (`.venv/bin/python -m pytest -q`, ~1 min). Push state: see `git status -sb`; the relay commits may be local only.
+Tests: `140 passed` (`.venv/bin/python -m pytest -q`, ~1 min). Push state: see `git status -sb`; the relay commits may be local only.
 
 ## Run it
 ```bash

@@ -200,6 +200,44 @@ class Display:
             yy += int(22 * s)
         return yy + int(10 * s)
 
+    ROUTE_TEXT = {"direct": "direct", "via drone": "via drone", "drone": "drone", "rejected": "REJECTED",
+                  "expired": "expired", "dropped": "dropped", "hop": "HOP"}
+
+    def _comms(self, panel, view, x0, y, w, s):
+        """Relay block: channel, link/jam/barrier status, queue, last messages with route + receipt."""
+        c = view.get("comms")
+        if not c:
+            return y
+        text(panel, "Comms relay (simulated)", (x0, y + 14 * s), 0.5 * s, WHITE, 1, False)
+        text(panel, f"channel {c['channel']}   hops {c['hops']}   queued {c['queued']}", (x0, y + 34 * s),
+             0.42 * s, GREY, 1, False)
+        y += int(44 * s)
+        flags = []
+        if c["jam_suspected"]:
+            flags.append(("JAM SUSPECTED - hopping channel", MAGENTA))
+        if c["barrier"]:
+            flags.append(("BARRIER: ground link blocked, via drone", AMBER))
+        if not flags:
+            flags.append(("link clear", GREY))
+        for msg, colour in flags:
+            text(panel, msg, (x0, y + 12 * s), 0.45 * s, colour, 1, False)
+            y += int(18 * s)
+        for m in reversed(c["messages"]):
+            colour = (MAGENTA if m["route"] in ("rejected", "hop") else
+                      AMBER if m["route"] in ("expired", "dropped") else CYAN)
+            tag = self.ROUTE_TEXT.get(m["route"], m["route"])
+            if m["route"] == "hop":
+                body = m["detail"]
+            elif m["route"] == "rejected":
+                body = m["detail"]
+            else:
+                body = f"{m['src']}>{m['dst']}  {m['text']}"
+                if m["state"] == "receipted":
+                    body += "  [receipt]"
+            text(panel, f"{tag:9s} {body}"[:50], (x0, y + 12 * s), 0.4 * s, colour, 1, False)
+            y += int(17 * s)
+        return y + int(8 * s)
+
     def render(self, frame, view):
         """frame + side panel. view: t, fps, latency_ms, backend, tracks, out (matcher), claims,
         rejected, jammed, selected, banners [(text, colour)], events, time_in_state(tid)."""
@@ -238,6 +276,7 @@ class Display:
             text(panel, f"{name}  {why}", (x0 + 28 * s, y + 16 * s), 0.45 * s, colour, 1, False)
             y += int(26 * s)
         y += int(8 * s)
+        y = self._comms(panel, view, x0, y, inner, s)
         text(panel, "Events", (x0, y + 14 * s), 0.5 * s, WHITE, 1, False)
         y += int(22 * s)
         for et, kind, msg in reversed(view["events"]):

@@ -92,3 +92,25 @@ def test_rf_only_view_draws_friendlies_without_video_and_uses_no_red():
         px = img[:, :w].reshape(-1, 3)
         red = (px[:, 2] > 180) & (px[:, 1] < 80) & (px[:, 0] < 80)
         assert not red.any()
+
+
+def test_comms_block_renders_every_route_without_red():
+    homo = Homography(synthetic.TABLE_CM)
+    assert homo.calibrate(synthetic.render(0))
+    d = Display(load_config(), homo)
+    frame = synthetic.render(1.0)
+    out = {"labels": {}, "ghosts": [], "rf_denied": False, "lost_friendlies": []}
+    rows = [{"t": 0.1, "src": "F-1", "dst": "F-2", "text": "need water", "route": r, "detail": "", "state": st}
+            for r, st in (("direct", "receipted"), ("via drone", "delivered"), ("drone", "delivered"))]
+    rows += [{"t": 0.2, "src": "?", "dst": "?", "text": "", "route": "rejected", "detail": "bad signature", "state": None},
+             {"t": 0.3, "src": "drone", "dst": "*", "text": "", "route": "hop", "detail": "channel 1 -> 3", "state": None},
+             {"t": 0.4, "src": "F-1", "dst": "F-2", "text": "old", "route": "expired", "detail": "ttl 30s", "state": "expired"}]
+    quiet = {"channel": 1, "hops": 0, "jam_suspected": False, "queued": 0, "barrier": False, "messages": []}
+    busy = {"channel": 3, "hops": 1, "jam_suspected": True, "queued": 2, "barrier": True, "messages": rows}
+    base = d.render(frame, dict(view(out, []), comms=None))
+    w = frame.shape[1]
+    for comms in (quiet, busy):
+        img = d.render(frame, dict(view(out, []), comms=comms))
+        assert not np.array_equal(img[:, w:], base[:, w:])  # the panel shows the comms block
+        px = img.reshape(-1, 3)
+        assert not ((px[:, 2] > 180) & (px[:, 1] < 80) & (px[:, 0] < 80)).any()
