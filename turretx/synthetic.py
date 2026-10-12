@@ -22,6 +22,10 @@ _DST = np.float32([[240, 90], [1040, 90], [1220, 690], [60, 690]])
 WARP = cv2.getPerspectiveTransform(_SRC, _DST)  # canvas px → output px
 
 CAR_CM = (8, 4)
+# F-1's roof sticker, styled like the SIST2026 event stickers (cream edge, black band, orange
+# ring, black disc with white rim text and an icon). STICKER_DISC_CM = the black disc inside the
+# orange ring, which is what the disc detector measures.
+STICKER_DISC_CM = 2.9
 CARS = {  # name: (BGR colour, sticker?)
     "F-1": ((200, 120, 40), True),
     "U-2": ((40, 160, 40), False),
@@ -53,8 +57,16 @@ def _draw_car(img, x, y, heading, colour, sticker):
     box = cv2.boxPoints(((cx, cy), size, math.degrees(heading))).astype(np.int32)
     cv2.fillPoly(img, [box], colour)
     if sticker:
-        r = int(1.5 * PX_PER_CM)
-        cv2.rectangle(img, (int(cx) - r, int(cy) - r), (int(cx) + r, int(cy) + r), (180, 40, 230), -1)
+        c = (int(cx), int(cy))
+        k = PX_PER_CM
+        cv2.circle(img, c, int(1.98 * k), (190, 220, 235), -1)   # cream edge + white backing margin
+        cv2.circle(img, c, int(1.75 * k), (25, 25, 25), -1)      # black band
+        cv2.circle(img, c, int(1.6 * k), (40, 140, 235), -1)     # orange ring
+        cv2.circle(img, c, int(STICKER_DISC_CM / 2 * k), (25, 25, 25), -1)  # black disc
+        for a in list(range(200, 340, 18)) + list(range(30, 150, 18)):  # white rim text, top + bottom
+            p = (int(c[0] + 1.15 * k * math.cos(math.radians(a))), int(c[1] + 1.15 * k * math.sin(math.radians(a))))
+            cv2.circle(img, p, 2, (235, 235, 235), -1)
+        cv2.rectangle(img, (c[0] - 4, c[1] - 3), (c[0] + 4, c[1] + 4), (235, 235, 235), 1)  # icon
 
 
 def render(t, cars=True):
@@ -73,6 +85,11 @@ def render(t, cars=True):
         _draw_car(img, x, y, h, colour, sticker)
     out = cv2.warpPerspective(img, WARP, OUT_SIZE, borderValue=(60, 60, 60))
     return cv2.GaussianBlur(out, (3, 3), 0)
+
+
+def tags_cfg():
+    """Tag config matching the synthetic sticker (disc mode)."""
+    return {"F-1": {"mode": "disc", "diameter_cm": STICKER_DISC_CM, "offset_cm": [0.0, 0.0]}}
 
 
 def car_velocity(name, t, dt=1e-3):

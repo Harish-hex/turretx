@@ -148,6 +148,7 @@ def run_link(seconds=6.0, actions=(), hide_sticker_after=None):
     cfg = load_config()
     cfg["table_cm"] = list(synthetic.TABLE_CM)
     cfg["detector"].update(backend="diff", ground_point_frac=0.5)
+    cfg["tags"] = synthetic.tags_cfg()
     homo = Homography(synthetic.TABLE_CM)
     assert homo.calibrate(synthetic.render(0.0))
     tracker = Tracker(cfg, homo)

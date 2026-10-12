@@ -102,7 +102,7 @@ def test_diff_rejects_arm_reaching_in_from_outside(homo):
 
 
 def test_tag_locator_tracks_friendly_sticker(homo):
-    loc = TagLocator(load_config()["tags"], homo)
+    loc = TagLocator(synthetic.tags_cfg(), homo)
     pos_err, vel_err = [], []
     for i in range(150):
         t = i / synthetic.FPS
@@ -118,7 +118,7 @@ def test_tag_locator_tracks_friendly_sticker(homo):
 
 
 def test_tag_locator_reports_invisible_when_sticker_hidden(homo):
-    loc = TagLocator(load_config()["tags"], homo)
+    loc = TagLocator(synthetic.tags_cfg(), homo)
     assert loc.update(synthetic.render(0, cars=False), 0.0) == [{"rf_id": "F-1", "t": 0.0, "visible": False}]
 
 
@@ -146,7 +146,7 @@ def test_yolo_backend_excludes_people():
 
 
 def test_tag_offset_is_subtracted(homo):
-    cfg = load_config()["tags"]
+    cfg = synthetic.tags_cfg()
     plain = TagLocator(cfg, homo).update(synthetic.render(1.0), 1.0)[0]
     cfg["F-1"]["offset_cm"] = [1.5, -4.0]
     shifted = TagLocator(cfg, homo).update(synthetic.render(1.0), 1.0)[0]
@@ -176,3 +176,36 @@ def test_merged_blob_is_flagged(homo):
             if t < 2.0:
                 assert not k["merged"]
     assert seen_merged
+
+
+def test_disc_not_fooled_by_aruco_markers_or_empty_arena(homo):
+    loc = TagLocator(synthetic.tags_cfg(), homo)
+    assert not loc.update(synthetic.render(0, cars=False), 0.0)[0]["visible"]
+
+
+def test_disc_not_fooled_by_dark_car_without_sticker(homo):
+    loc = TagLocator(synthetic.tags_cfg(), homo)
+    frame = synthetic.render(0, cars=False)
+    # a black toy car (8 x 4 cm, ~ 80 x 40 canvas px) drawn in the output image near the middle
+    c = synthetic.cm_to_out_px([(46, 28), (54, 28), (54, 32), (46, 32)]).astype(np.int32)
+    cv2.fillPoly(frame, [c], (20, 20, 20))
+    assert not loc.update(frame, 0.0)[0]["visible"]
+
+
+def test_disc_found_on_a_dark_roof(homo, monkeypatch):
+    """The light ring separates the disc from a black car body."""
+    monkeypatch.setitem(synthetic.CARS, "F-1", ((20, 20, 20), True))  # paint F-1 black
+    loc = TagLocator(synthetic.tags_cfg(), homo)
+    errs = []
+    for i in range(0, 240, 4):  # before the U-2 overlap at ~8.8 s
+        t = i / synthetic.FPS
+        fix = loc.update(synthetic.render(t), t)[0]
+        assert fix["visible"], f"lost at t={t:.2f}"
+        x, y, _ = synthetic.car_states(t)["F-1"]
+        errs.append(np.hypot(fix["x"] - x, fix["y"] - y))
+    assert max(errs) < 1.0
+
+
+def test_only_one_disc_tag_allowed(homo):
+    with pytest.raises(ValueError):
+        TagLocator({"F-1": {"mode": "disc", "diameter_cm": 3}, "F-2": {"mode": "disc", "diameter_cm": 3}}, homo)
