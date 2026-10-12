@@ -10,6 +10,7 @@ scale_m_per_cm: 10          # scenario scale (R9): 1 cm on the table = 10 m
 aruco: {dict: DICT_4X4_50, ids: [0, 1, 2, 3]}   # TL, TR, BR, BL
 camera_moved_px: 8
 homography_file: homography.json
+display: {max_width: 1600}   # window is scaled down to fit this width
 
 detector:
   backend: yolo             # yolo | yoloworld | diff

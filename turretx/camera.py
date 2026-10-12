@@ -85,6 +85,12 @@ class Camera:
             self._last_seq = seq
             return frame, t
 
+    def latency_ms(self, t):
+        """Live only: how old frame time t is now (capture → display), else None."""
+        if self.is_file:
+            return None
+        return (time.monotonic() - self._t0 - t) * 1000
+
     @property
     def fps(self):
         return self.cap.get(cv2.CAP_PROP_FPS) or 30.0

@@ -221,6 +221,7 @@ For every (claim *c*, track *k*) pair:
 - **Banners:** SUSPICIOUS events, **red-team actions** ("RED TEAM: cloned ID injected", R24), "CAMERA MOVED". Beep via `winsound` on Windows, terminal bell elsewhere.
 - **Event ticker:** the last 6 events. FPS + end-to-end latency shown in the corner.
 - **Every** label change, conflict and RF rejection is written to `logs/<timestamp>.jsonl`.
+- **Implementation:** `display.py` (video overlay with drawn icons, dashed box for COASTING, side panel with mini-map in scenario km, selected-vehicle P/M/R/confidence bars and time in state, legend, event ticker; window scaled to `display.max_width`), `events.py` (diffs matcher output each frame → ticker + JSONL; beeps once when a vehicle turns SUSPICIOUS). A persistent `VERIFY: #n …` banner lists every SUSPICIOUS vehicle.
 
 ### 5.8 Hotkeys
 `h` calibrate homography · `b` capture empty-table background · Tab / click: select vehicle · `m` **mark** the cued/selected vehicle (laser blinks) · `x` cancel mark / laser off · `t` turret calibration · `f` forged · `r` replay · `d` cloned ID · `g` ghost · `j` jam toggle · `p` pause · `q` quit
