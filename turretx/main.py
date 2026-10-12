@@ -3,13 +3,14 @@
 Phase 2: camera → homography → vehicle tracking (+ simulator-only tag locator).
 Run:  python -m turretx.main [--source 1 | recordings/clip.mp4] [--backend yolo|yoloworld|diff]
                              [--weights yolo26n.pt] [--debug-tags] [--headless --max-frames N]
-Keys: h calibrate (ArUco; falls back to clicking TL, TR, BR, BL) · b capture empty-table
-      background (diff backend) · p pause · q quit
+Keys: h calibrate (ArUco; falls back to clicking TL, TR, BR, BL: right-click undo, Esc cancel)
+      · b capture empty-table background (diff backend) · p pause · q quit
 """
 import argparse
 import time
 
 import cv2
+import numpy as np
 
 from turretx.camera import Camera
 from turretx.config import load_config, parse_source
@@ -19,6 +20,7 @@ from turretx.tracker import DiffBackend, Tracker
 
 WINDOW = "TurretX"
 DRIFT_CHECK_EVERY = 30  # frames
+AUTO_CALIBRATE_EVERY = 15  # frames, until calibrated
 CORNER_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"]
 
 
@@ -51,6 +53,16 @@ def draw_tag_fixes(vis, homo, fixes):
             cv2.drawMarker(vis, (int(px), int(py)), (0, 255, 255), cv2.MARKER_TILTED_CROSS, 14, 2)
             cv2.putText(vis, f"GPS {f['rf_id']}", (int(px) + 8, int(py) - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+
+def draw_clicks(vis, clicks):
+    """Numbered click points joined in order, so a wrong click is easy to spot (and undo)."""
+    for i, p in enumerate(clicks):
+        if i:
+            cv2.line(vis, clicks[i - 1], p, (0, 255, 255), 2)
+        cv2.circle(vis, p, 8, (0, 255, 255), -1)
+        cv2.putText(vis, str(i + 1), (p[0] + 10, p[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4)
+        cv2.putText(vis, str(i + 1), (p[0] + 10, p[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
 
 
 def put_lines(vis, lines, colour=(255, 255, 255)):
@@ -89,43 +101,62 @@ def main():
 
     clicks = []
     state = {"click_mode": False}
+    notice = {"text": "", "until": 0.0}
+
+    def notify(text, seconds=3.0):
+        print(text)
+        notice.update(text=text, until=time.monotonic() + seconds)
 
     def on_mouse(event, x, y, *_):
-        if event == cv2.EVENT_LBUTTONDOWN and state["click_mode"]:
+        if not state["click_mode"]:
+            return
+        if event == cv2.EVENT_LBUTTONDOWN:
             clicks.append((x, y))
             if len(clicks) == 4:
                 homo.set_points(clicks)
                 homo.save(calib_file)
                 state["click_mode"] = False
-                print("Calibrated from 4 clicks")
+                notify("Calibrated from 4 clicks")
+        elif event == cv2.EVENT_RBUTTONDOWN and clicks:
+            clicks.pop()
 
     if not args.headless:
         cv2.namedWindow(WINDOW)
         cv2.setMouseCallback(WINDOW, on_mouse)
 
     frame, t = None, 0.0
-    frames, paused, moved = 0, False, False
-    fps, last = 0.0, time.monotonic()
+    frames, paused, moved, no_signal = 0, False, False, False
+    dt_avg, last = None, time.monotonic()
     while True:
         if not paused or frame is None:
             new_frame, new_t = cam.read()
             if new_frame is None:
-                break
-            frame, t = new_frame, new_t
-            frames += 1
-            now = time.monotonic()
-            fps = 0.9 * fps + 0.1 / max(now - last, 1e-6)
-            last = now
+                if cam.is_file:
+                    break  # end of the recording
+                no_signal = True  # live source dropped: keep the window up, camera reconnects
+                if frame is None:
+                    frame = np.zeros((cfg["camera"]["height"], cfg["camera"]["width"], 3), np.uint8)
+            else:
+                no_signal = False
+                frame, t = new_frame, new_t
+                frames += 1
+                now = time.monotonic()
+                dt = now - last
+                last = now
+                dt_avg = dt if dt_avg is None else 0.9 * dt_avg + 0.1 * dt
 
-            if not homo.ready and frames == 1 and homo.calibrate(frame):
-                homo.save(calib_file)
-                print("Auto-calibrated from ArUco markers")
-            if homo.ready and frames % DRIFT_CHECK_EVERY == 0:
-                d = homo.drift_px(frame)
-                moved = d is not None and d > cfg["camera_moved_px"]
+                # keep trying until the markers are seen (people/cars may cover them at start)
+                if not homo.ready and not state["click_mode"] and frames % AUTO_CALIBRATE_EVERY == 1:
+                    if homo.calibrate(frame):
+                        homo.save(calib_file)
+                        notify("Auto-calibrated from ArUco markers")
+                if homo.ready and frames % DRIFT_CHECK_EVERY == 0:
+                    d = homo.drift_px(frame)
+                    if d is not None:  # covered markers keep the previous verdict (R12)
+                        moved = d > cfg["camera_moved_px"]
 
-            tracks = tracker.update(frame, t)
-            fixes = tag_locator.update(frame, t)  # → RF simulator only (Phase 3)
+                tracks = tracker.update(frame, t)
+                fixes = tag_locator.update(frame, t)  # → RF simulator only (Phase 3)
 
         if args.headless:
             if args.max_frames and frames >= args.max_frames:
@@ -138,34 +169,48 @@ def main():
             draw_tracks(vis, tracks)
             if args.debug_tags:
                 draw_tag_fixes(vis, homo, fixes)
+        fps = 1.0 / dt_avg if dt_avg else 0.0
         lines = [f"t={t:7.2f}s  fps={fps:4.1f}  vehicles={len(tracks)}  [{cfg['detector']['backend']}]"
                  + ("  PAUSED" if paused else "")]
         if state["click_mode"]:
-            lines.append(f"Click the {CORNER_NAMES[len(clicks)]} marker centre ({len(clicks)}/4)")
-            for p in clicks:
-                cv2.circle(vis, p, 6, (0, 255, 255), -1)
+            draw_clicks(vis, clicks)
+            lines.append(f"CLICK the {CORNER_NAMES[len(clicks)].upper()} marker centre ({len(clicks) + 1}/4)")
+            lines.append("right-click = undo, Esc = cancel")
         elif not homo.ready:
             lines.append("NOT CALIBRATED - press h")
         put_lines(vis, lines)
+        alerts = []
+        if no_signal:
+            alerts.append("NO SIGNAL - reconnecting camera...")
         if moved:
-            put_lines(vis, ["", "", "CAMERA MOVED - press h"], (255, 0, 255))
+            alerts.append("CAMERA MOVED - press h")
+        if time.monotonic() < notice["until"]:
+            alerts.append(notice["text"])
+        if alerts:
+            put_lines(vis, [""] * len(lines) + alerts, (255, 0, 255))
         cv2.imshow(WINDOW, vis)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break
-        if key == ord("b") and isinstance(tracker.backend, DiffBackend):
-            tracker.backend.set_background(frame)
-            print("Captured empty-table background (make sure no cars were on the table)")
+        if key == 27 and state["click_mode"]:
+            state["click_mode"] = False
+            notify("Click calibration cancelled")
+        if key == ord("b"):
+            if isinstance(tracker.backend, DiffBackend):
+                tracker.backend.set_background(frame)
+                notify("Captured empty-table background (table must be empty)")
+            else:
+                notify(f"b only applies to the diff backend (current: {cfg['detector']['backend']})")
         if key == ord("p"):
             paused = not paused
         if key == ord("h"):
             moved = False
             if homo.calibrate(frame):
                 homo.save(calib_file)
-                print("Calibrated from ArUco markers")
+                notify("Calibrated from ArUco markers")
             else:
-                print("Markers not all visible: click the 4 corners (TL, TR, BR, BL)")
+                notify("Markers not all visible: click the 4 corners instead", 5.0)
                 clicks.clear()
                 state["click_mode"] = True
         if args.max_frames and frames >= args.max_frames:

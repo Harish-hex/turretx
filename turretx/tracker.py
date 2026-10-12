@@ -105,22 +105,29 @@ class DiffBackend:
         if bg and Path(bg).exists():
             self.background = cv2.imread(bg)
         self.tracker = CentroidTracker()
+        self._zone_key = None  # zone masks are cached until the calibration changes
+
+    def _zone_masks(self, shape):
+        """(zone, inner): table area + slack, and the same eroded by ~3 px. A blob with any
+        outline point outside `inner` touches the zone edge: an arm/stick from outside (R7)."""
+        key = (self.homo.H.tobytes(), shape[:2])
+        if key != self._zone_key:
+            s = TABLE_SLACK_CM
+            poly = self.homo.to_px([(-s, -s), (self.homo.w + s, -s),
+                                    (self.homo.w + s, self.homo.h + s), (-s, self.homo.h + s)])
+            self._zone = np.zeros(shape[:2], np.uint8)
+            cv2.fillPoly(self._zone, [poly.astype(np.int32)], 255)
+            self._inner = cv2.erode(self._zone, np.ones((7, 7), np.uint8))
+            self._zone_key = key
+        return self._zone, self._inner
 
     def set_background(self, frame):
         self.background = frame.copy()
 
-    def _zone_px(self, shape):
-        s = TABLE_SLACK_CM
-        poly = self.homo.to_px([(-s, -s), (self.homo.w + s, -s),
-                                (self.homo.w + s, self.homo.h + s), (-s, self.homo.h + s)])
-        mask = np.zeros(shape[:2], np.uint8)
-        cv2.fillPoly(mask, [poly.astype(np.int32)], 255)
-        return poly.astype(np.float32), mask
-
     def update(self, frame):
         if self.background is None or not self.homo.ready:
             return []
-        poly, zone = self._zone_px(frame.shape)
+        zone, inner = self._zone_masks(frame.shape)
         diff = cv2.absdiff(frame, self.background).max(axis=2)
         diff = cv2.GaussianBlur(diff, (5, 5), 0)
         _, mask = cv2.threshold(diff, self.thresh, 255, cv2.THRESH_BINARY)
@@ -133,8 +140,8 @@ class DiffBackend:
             area = cv2.contourArea(c)
             if not self.min_area <= area <= self.max_area:
                 continue
-            # R7: a blob reaching the zone edge is an arm/stick coming in from outside
-            if any(cv2.pointPolygonTest(poly, (float(p[0][0]), float(p[0][1])), True) < 3 for p in c):
+            pts = c[:, 0, :]
+            if (inner[pts[:, 1], pts[:, 0]] == 0).any():  # touches the zone edge (R7)
                 continue
             x, y, w, h = cv2.boundingRect(c)
             boxes.append((x, y, x + w, y + h))

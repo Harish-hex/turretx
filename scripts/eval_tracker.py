@@ -40,6 +40,7 @@ def main():
     if args.truth:
         cfg["table_cm"] = list(synthetic.TABLE_CM)
         d["diff"]["background"] = "recordings/synthetic_bg.png"
+        d["ground_point_frac"] = 0.5  # synthetic cars are flat: their centre IS the ground point
     for key, val in [("backend", args.backend), ("weights", args.weights), ("conf", args.conf),
                      ("ground_point_frac", args.ground_frac)]:
         if val is not None:
@@ -54,7 +55,7 @@ def main():
     frames, per_frame, ids = 0, [], set()
     hits = total = 0
     pos_err, vel_err, last_id, switches = [], [], {}, 0
-    t0 = time.monotonic()
+    t0 = None  # timer starts after the first tracked frame: model load + GPU warm-up excluded
     while True:
         frame, t = cam.read()
         if frame is None:
@@ -63,6 +64,9 @@ def main():
             continue
         tracker = tracker or Tracker(cfg, homo)
         tracks = tracker.update(frame, t)
+        if t0 is None:
+            t0 = time.monotonic()
+            continue
         frames += 1
         per_frame.append(len(tracks))
         ids.update(tr["track_id"] for tr in tracks)
@@ -84,11 +88,11 @@ def main():
             if name in last_id and last_id[name] != best["track_id"]:
                 switches += 1
             last_id[name] = best["track_id"]
-    elapsed = time.monotonic() - t0
+    elapsed = time.monotonic() - t0 if t0 else 0.0
     cam.release()
 
     print(f"backend={cfg['detector']['backend']} weights={d.get('weights')} frames={frames} "
-          f"fps={frames / max(elapsed, 1e-6):.1f}")
+          f"fps={frames / max(elapsed, 1e-6):.1f} (excl. first frame)")
     print(f"  vehicles/frame mean={np.mean(per_frame) if per_frame else 0:.2f}  distinct IDs={len(ids)}")
     if args.truth:
         recall = hits / max(total, 1)

@@ -142,3 +142,12 @@ def test_yolo_backend_excludes_people():
     names = b.model.names
     assert all(names[i] != "person" for i in b.classes)
     assert any(names[i] == "car" for i in b.classes)
+
+
+def test_tag_offset_is_subtracted(homo):
+    cfg = load_config()["tags"]
+    plain = TagLocator(cfg, homo).update(synthetic.render(1.0), 1.0)[0]
+    cfg["F-1"]["offset_cm"] = [1.5, -4.0]
+    shifted = TagLocator(cfg, homo).update(synthetic.render(1.0), 1.0)[0]
+    assert shifted["x"] == pytest.approx(plain["x"] - 1.5)
+    assert shifted["y"] == pytest.approx(plain["y"] + 4.0)

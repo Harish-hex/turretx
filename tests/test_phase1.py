@@ -13,7 +13,7 @@ def make_h():
 
 def test_config_loads_and_parses_source():
     cfg = load_config()
-    assert cfg["table_cm"] == [100, 60]
+    assert len(cfg["table_cm"]) == 2 and min(cfg["table_cm"]) > 0
     assert parse_source(1) == 1
     assert parse_source("2") == 2
     assert parse_source("recordings/a.mp4") == "recordings/a.mp4"

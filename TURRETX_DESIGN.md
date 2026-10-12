@@ -26,10 +26,10 @@ The deck pitched a *ground-vehicle turret* framing. **It is now re-framed as air
 | Developers | **1** (Harish). Teammates: electronics, deck, research, scene, car driving, labelling |
 | Run machine | Windows laptop, **RTX 3050** (4 GB VRAM) — main/demo |
 | Code machine | Mac M1, developing against recorded clips (MPS) |
-| Camera | **Android phone** via Iriun (or DroidCam) over USB, angled **≥60°** (steeper = better, R11) at a table |
-| Scene | **1 RC car = Friendly-1** (roof sticker, R1) + **2+ toy cars = unknowns**, moved with sticks or thread (**no hands in frame**, R7), on a plain table about 100×60 cm with **4 ArUco corner markers** |
-| Laser turret | ESP32 + 2 servos (pan/tilt) + low-power laser pointer, mounted above/beside the table, connected to the 3050 by USB serial. Built by the electronics team (§5.9) |
-| Scenario scale | **1 cm on the table = 10 m** → the table represents 1 km × 600 m; virtual drone at 300 m altitude (R9) |
+| Camera | **Android phone** via Iriun (or DroidCam) over USB at **1080p**, **rigidly mounted ~2 m above the arena, as close to straight down as possible** (steeper = better, R11). **Never handheld:** the calibration assumes a fixed camera |
+| Scene | **1 RC car = Friendly-1** (roof sticker, R1) + **2+ toy cars = unknowns**, moved with sticks or thread (**no hands in frame**, R7), on a **floor arena**: a plain matte sheet about 200×150 cm with **4 ArUco corner markers (15 cm)**. The code calls the arena "table"; any flat area works |
+| Laser turret | ESP32 + 2 servos (pan/tilt) + low-power laser pointer, mounted high near the camera, pointing down at the arena, connected to the 3050 by USB serial. Built by the electronics team (§5.9) |
+| Scenario scale | **1 cm on the arena = 10 m** → a 200×150 cm arena represents 2 km × 1.5 km; virtual drone at 300 m altitude (R9) |
 | Available hardware | ESP32-S3, Raspberry Pi 5, MPU6050, one AS5600 encoder, ultrasonics, laser pointers (extras TBC). **No GPS, LoRa or radar.** Same kit as `~/harzard-poc` |
 | Performance target | ≥10 FPS end to end (3050 should manage 30+), labels update within 1 s |
 | Scale | 3–5 vehicles in view, 1–2 friendly RF IDs |
@@ -134,10 +134,11 @@ tests/           # matcher unit + metamorphic tests on synthetic tracks
   - `yoloworld`: `yolov8s-world.pt` with `set_classes(["toy car"])`.
   - `diff`: **difference from a reference frame of the empty table** (hotkey `b` captures it). absdiff → threshold → morphology → contours. Reject blobs **touching the table border** or outside `[min_area, max_area]` (hands, sticks, R7). Very reliable in a controlled scene, including stopped cars. **This is the guaranteed fallback.** It needs locked phone exposure and diffuse light (shadows inflate blobs). Known limitation: cars touching each other merge into one blob (R16), so run the crossing scenario on a YOLO backend.
 - **Tracking:** ByteTrack via `model.track(persist=True, tracker=...)` with `track_buffer` raised to about 60. For the `diff` backend, use a small centroid+IoU tracker with Hungarian assignment (scipy).
-- **Ground point:** use the **bottom-centre of the box**, not its centre. The homography maps the *ground plane*. At an angle this is still biased by a few cm depending on heading (R11), so mount the camera at ≥60° and tune σp on real data.
+- **Ground point:** `ground_point_frac` picks where in the box the car's position is. **0.5 (centre)** for the planned near-overhead camera; **1.0 (bottom edge)** for a shallow, angled camera, where the box centre sits above the ground. Confirm with `scripts/measure_tag_offset.py`, and tune σp on real data (R11).
 - **Kinematics:** keep **0.5 s** of (t, x_cm, y_cm) per track (`tracker.velocity_window_s`); velocity = least-squares slope; speed and heading derived from it. Below 2 cm/s, treat the vehicle as stationary. *(Phase 2 finding: a 1 s window reports the velocity from ~0.5 s ago and was ~4 cm/s off on curves; 0.5 s halves that while staying robust to jitter.)*
 - **Re-acquisition:** a lost-then-found vehicle gets a new track ID and its confidence history restarts, so it needs about 1 s to regain FRIENDLY. This is intended, honest behaviour (R17).
-- **Hour-2 checkpoint tool:** `python scripts/eval_tracker.py --backend <b> [--weights w] --source <clip>`. On the synthetic clip add `--truth` to score recall, position/velocity error and ID switches. On real clips it reports vehicles per frame and distinct IDs (fewer = steadier). Phase 2 synthetic baseline for `diff`: 100% recall, 0.5 cm mean position error, ~95 FPS on the M1; all ID switches came from cars within ~10 cm merging (R16).
+- **Robustness (from code review):** a dropped live camera shows NO SIGNAL and reconnects instead of exiting; auto-calibration retries every 15 frames until the markers are seen; covered markers keep the last CAMERA MOVED verdict; live timestamps start at 0 when the camera opens.
+- **Hour-2 checkpoint tool:** `python scripts/eval_tracker.py --backend <b> [--weights w] --source <clip>`. On the synthetic clip add `--truth` (uses the box centre automatically, since synthetic cars are flat) to score recall, position/velocity error and ID switches. FPS excludes model loading. On real clips it reports vehicles per frame and distinct IDs (fewer = steadier). Phase 2 synthetic baseline for `diff`: 100% recall, 0.5 cm mean position error, ~95 FPS on the M1; all ID switches came from cars within ~10 cm merging (R16).
 - **Motion blur** is the main cause of unreliable detection while moving: lock exposure, light the table well, use 60 FPS if available.
 
 ### 5.2 Homography (R12)
@@ -148,7 +149,7 @@ tests/           # matcher unit + metamorphic tests on synthetic tracks
 - Each friendly car has a **matte coloured sticker** (about 3×3 cm) on its roof, in a colour that appears nowhere else in the scene (pick it at scene setup; HSV range in config). Friendly-1 = colour 1, Friendly-2 = colour 2. **No click-binding is needed.**
 - Per frame: HSV threshold → largest blob → centroid → homography → cm. Velocity by least-squares over ~1 s.
 - **Firewall:** `taglocator` output goes **only** to `rfsim`. The tracker and matcher never import it. This is what makes the matching non-circular: if the tracker swaps IDs in a crossing, the RF truth still follows the *physical* car, so the swap shows up as a mismatch.
-- Note: the sticker sits above the ground plane, so its projected position has a small parallax offset (a few cm). Treat it like GPS error.
+- **Offset correction:** the sticker sits on the roof (above the table plane) and the tracker uses the bottom of each box, so sticker and track disagree by a few cm (≈4 cm on the synthetic clip). Measure it once on a real clip with `scripts/measure_tag_offset.py` (same detector as the demo) and put the median into the tag's `offset_cm`. If the reported spread is large (>4 cm), the camera is too shallow; steepen it.
 - If a sticker isn't visible (e.g. a stick blocks it), the beacon keeps dead-reckoning at constant velocity for up to 1 s, then stops replying (comms-loss → coasting).
 - **Pitch line:** "Each friendly reports its own position from its own navigation. Here, a sticker read by a *separate* sensor stands in for the vehicle's GPS. Stretch goal #5 replaces it with real on-board odometry."
 - **Perception risk:** a judge seeing a sticker may assume it identifies friendlies. **Say the pitch line before they can wonder, then immediately prove it:** press `j` (jam) and the stickered car fades to UNKNOWN *with the sticker still visible*; then `d` (cloned ID) flags a car *without* a sticker as ID CONFLICT. Only the RC car wears a sticker. Put it on **before recording dev clips** so the tag locator can be built offline.
@@ -340,7 +341,7 @@ matcher:
 
 | Hours | Harish (software) | Teammates (parallel) |
 |---|---|---|
-| 0–1 | Run setup on the 3050, camera feed via Iriun | Build the scene (table, markers, mount ≥60°, lighting, RC car + toy cars + sticks, roof sticker). **Record test clips.** Electronics: **start the laser turret** (servos, laser via transistor, firmware per §5.9 protocol, mechanical limits, heartbeat timeout) |
+| 0–1 | Run setup on the 3050, camera feed via Iriun | Build the scene (floor mat, 15 cm markers, rigid overhead mount, lighting, RC car + toy cars + sticks, roof sticker). **Record test clips.** Electronics: **start the laser turret** (servos, laser via transistor, firmware per §5.9 protocol, mechanical limits, heartbeat timeout) |
 | 1–3 | camera + homography + detector/tracker. **Hour 2 checkpoint: pick the best backend** | Fix deck typos; re-pitch the deck as air-to-ground |
 | 1–4 | — | **Label about 250 frames in Roboflow** (DEPENDENCIES.md §6) |
 | 3–4 | Kinematics, Track contract, taglocator | Write the 5-minute demo script |
@@ -422,6 +423,7 @@ matcher:
 | 8 | Add-ons #3, #6, #2, #1; #5 stretch; cut #4, laser, web UI | Larger set | ~3.5 h budget for one developer |
 | 9 | ESP32 WiFi/ESP-NOW beacon instead of LoRa | LoRa | No LoRa on hand; ESP32-S3 + Pi 5 + odometry firmware already exist |
 | 10 | Phone camera (Iriun, USB), angled ≥60° | Laptop webcam overhead | Easier mounting; homography handles the angle |
+| 10b | **Floor arena (~200×150 cm mat), phone rigidly mounted ~2 m up, near-overhead, 1080p, 15 cm markers, ground point = box centre** | Table with angled phone; handheld phone | More room for the RC car; steeper view cuts sticker/box bias; handheld would break calibration, motion checks and laser aim |
 | 11 | Drop the friend's unknown pretrained model | Keep using it | Unknown provenance can't be debugged; `.pt` pickle can run code |
 | 12 | Official YOLOv8n → compare YOLO-World / diff → optional Roboflow fine-tune | Use the unknown model | Known, debuggable, fast to fine-tune |
 | 13 | Code on Mac, run on Windows RTX 3050, sync via git (Harish-hex/turretx, private) | Single machine | User preference; Mac has Claude Code; 3050 is the demo machine |
@@ -454,7 +456,7 @@ matcher:
 | R8 | Skeptic | Heading noise at low speed → false SUSPICIOUS | Accepted → heading term only above 5 cm/s |
 | R9 | Skeptic | RSSI constant across the table | Accepted → scenario scale, weight 0.10 |
 | R10 | Skeptic | `linear_sum_assignment` fails with `inf` | Accepted → large finite cost |
-| R11 | Skeptic | Bottom-centre bias at an angle | Accepted → ≥60° mount, tune σp |
+| R11 | Skeptic | Bottom-centre bias at an angle | Accepted → near-overhead mount, `ground_point_frac`, measured tag offset, tune σp |
 | R12 | Skeptic | Bumped camera = silent error | Accepted → drift check banner |
 | R13 | Skeptic | OpenCV frame buffering latency | Accepted → grabber thread |
 | R14 | Skeptic | HMAC over re-serialised JSON | Accepted → raw bytes, ints, compare_digest |

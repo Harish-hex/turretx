@@ -90,29 +90,37 @@ The Mac runs the full pipeline on recorded clips at roughly 15–25 FPS on MPS. 
 ## 4. Android phone (camera)
 1. Install **Iriun Webcam** from the Play Store. *(Fallback: DroidCam. Its USB mode needs Developer options → **USB debugging** on.)*
 2. Connect to the 3050 by **USB** (lower latency, and avoids the crowded venue WiFi). If you use WiFi, use your **own hotspot**.
-3. In the camera app: **lock focus + exposure**, set **720p**, and use 60 FPS if available.
+3. In the camera app: **lock focus + exposure**, set **1080p** (vehicles are small from high up), and use 60 FPS if available.
 4. Phone settings: keep it plugged in, set auto-lock to never, turn on Do Not Disturb.
-5. Mount at **about 45–60° looking down** at the table, with **all 4 corner markers in frame**.
+5. **Mount it rigidly ~2 m above the arena, as close to straight down as possible**, with **all 4 corner markers in frame**. Never hold it by hand: the calibration assumes the camera doesn't move.
 
 The camera source is a setting in `config.yaml`: a webcam index (e.g. `1`), a video file (`recordings/clip1.mp4`), or a URL (`http://<phone-ip>:8080/video` for the IP Webcam app).
 
 ---
 
 ## 5. Physical scene checklist (teammates)
-- [ ] Plain, single-colour, matte surface (table or floor), about 100 × 60 cm. Measure it exactly and put the numbers in `config.yaml`.
-- [ ] 4 **ArUco markers** (DICT_4X4_50, IDs 0–3), printed about 8 cm wide, taped at the corners: 0 = top-left, 1 = top-right, 2 = bottom-right, 3 = bottom-left. Generator: https://chev.me/arucogen/
+- [ ] **Floor arena:** a plain, single-colour, matte sheet (bedsheet, chart paper or cardboard) about **200 × 150 cm**, laid flat over the floor so tiles, grout lines and carpet texture don't show. Tape it down.
+- [ ] 4 **ArUco markers**: print `markers/markers.pdf` (one per A4 page) at **100% / actual size** and check the black square is **15 cm**. Tape them flat at the arena corners as labelled: 0 = top-left, 1 = top-right, 2 = bottom-right, 3 = bottom-left (as seen in the camera image). Measure the distance between marker **centres** into `table_cm` in `config.yaml`.
 - [ ] Even, diffuse lighting, no harsh moving shadows (avoid windows behind)
 - [ ] 3–4 toy/RC cars that look different from each other and contrast with the surface
 - [ ] **No hands in frame:** use RC cars, or move toy cars with thin sticks or thread. Hands get detected as vehicles.
 - [ ] **Roof sticker on each friendly car** (~3×3 cm, matte), in a colour that appears **nowhere else** in the scene (bright pink/magenta or neon green usually works). Friendly-1 and Friendly-2 get different colours. This sticker is the simulator's stand-in for the vehicle's GPS.
-- [ ] Phone mount: tripod with an arm, a selfie stick taped to a chair, or a broomstick across two chairs. **Angle ≥60°** (steeper is more accurate). Once calibrated, **don't touch it**.
-- [ ] A marked start spot + direction on the table for the ESP32 car (stretch goal only)
+- [ ] **Phone mount, rigid and high (~2 m), looking down:** a tripod with an extension arm, the phone taped to a shelf, stair railing or ladder, a selfie stick clamped to a tall chair, or a broomstick across two cupboards. Once calibrated, **don't touch it** (the app warns CAMERA MOVED if it shifts).
+- [ ] Keep people's shadows off the arena (light from above or behind the camera), and keep feet outside the mat.
+- [ ] A marked start spot + direction on the arena for the ESP32 car (stretch goal only)
+
+### Calibrate the sticker offset (once the scene is final)
+Record ~1 minute of the stickered RC car driving around the whole arena, away from the other cars, then:
+```powershell
+python scripts\measure_tag_offset.py --source recordings\offset.mp4 --backend yolo --weights yolo26n.pt
+```
+Paste the printed `offset_cm` into `config.yaml` under the tag. Re-measure if the camera or detector changes.
 
 ### Laser turret (electronics team), see TURRETX_DESIGN.md §5.9
 - [ ] ESP32 + 2 servos (pan/tilt bracket) + **Class 2 (<1 mW) laser pointer** switched through a transistor (not straight off a GPIO pin)
 - [ ] Servos on their **own 5 V supply** with common ground (servos browning out the ESP32 is the classic failure)
-- [ ] Firmware: serial 115200 baud, commands `P <pan*10> <tilt*10>`, `L 0|1|2`, `H` (reply `OK` / `ERR`). **Clamp servo angles to the table area. Laser OFF at power-up. Laser OFF if no `H` heartbeat for 500 ms**
-- [ ] Mount it rigidly above or beside the table so it can reach the whole designation zone. Once calibrated, don't move it
+- [ ] Firmware: serial 115200 baud, commands `P <pan*10> <tilt*10>`, `L 0|1|2`, `H` (reply `OK` / `ERR`). **Clamp servo angles to the arena. Laser OFF at power-up. Laser OFF if no `H` heartbeat for 500 ms**
+- [ ] Mount it rigidly up high near the camera, pointing down, so it can reach the whole arena (designation zone). Once calibrated, don't move it
 - [ ] Note the COM port in Device Manager → Ports and put it in `config.yaml` (`turret.port`)
 
 ---
@@ -133,7 +141,8 @@ The camera source is a setting in `config.yaml`: a webcam index (e.g. `1`), a vi
 |---|---|
 | `torch.cuda.is_available()` is False | Update the NVIDIA driver, then reinstall the cu126 torch (see above) |
 | A camera index won't open | Close Iriun/DroidCam preview windows; try the next index; replug USB |
-| Laggy or frozen frames | Use USB instead of WiFi; 720p, not 1080p |
+| Laggy or frozen frames | Use USB instead of WiFi; if still laggy, drop to 720p (and print bigger markers) |
+| Markers not detected from high up | Print bigger (`python scripts/make_markers.py --cm 18`), make sure they're flat and not glossy, and add light |
 | YOLO-World fails on `set_classes` | Git is missing or there's no internet. Re-run `python scripts/prefetch.py` |
 | `CUDA out of memory` while training | `batch=4` |
 | PowerShell blocks `Activate.ps1` | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
